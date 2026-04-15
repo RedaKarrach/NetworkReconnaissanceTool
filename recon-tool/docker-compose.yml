@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Network Recon & Attack Simulation Tool
+# No Redis, No Celery — InMemoryChannelLayer + Python threading
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:6
+    container_name: recon_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Django + Channels (Daphne ASGI) ───────────────────────────────────────
+  django:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: recon_django
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings
+    # OneDrive reparse-point mounts can hide files in Linux containers.
+    # Run from the image filesystem in this setup.
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # Scapy requires raw socket privileges
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    network_mode: host        # needed for Scapy to see real network interfaces
+    command: >
+      sh -c "python manage.py migrate --run-syncdb &&
+             daphne -b 0.0.0.0 -p 8000 config.asgi:application"
+
+  # ── React (Nginx) ──────────────────────────────────────────────────────────
+  react:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: recon_react
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - django
+
+
+volumes:
+  mongo_data:
