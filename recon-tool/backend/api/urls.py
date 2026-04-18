@@ -4,6 +4,9 @@ from .views import (
     HostDiscoveryView, PortScanView, OSFingerprintView,
     ARPSpoofView, SYNFloodView, StopThreadView,
     SessionResultsView, PDFReportView, InboundAlertView,
+    InventoryIngestView, InventoryLatestView,
+    AgentRegistryView,
+    InboundPacketView,
 )
 
 try:
@@ -25,6 +28,12 @@ urlpatterns = [
 
     # Inbound alerts from VM agents
     path("alerts/",               InboundAlertView.as_view()),
+    path("packets/",              InboundPacketView.as_view()),
+
+    # Agent inventory
+    path("agents/inventory/",        InventoryIngestView.as_view()),
+    path("agents/inventory/latest/", InventoryLatestView.as_view()),
+    path("agents/registry/",         AgentRegistryView.as_view()),
 
     # Results & reports
     path("results/<str:session_id>/",    SessionResultsView.as_view()),

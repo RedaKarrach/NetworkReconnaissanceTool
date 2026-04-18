@@ -4,7 +4,7 @@ Django's built-in auth continues to use SQLite; all recon data goes to MongoDB.
 """
 from mongoengine import (
     Document, StringField, IntField, FloatField,
-    DateTimeField, ReferenceField, ListField
+    DateTimeField, ReferenceField, ListField, DictField
 )
 from datetime import datetime
 
@@ -83,3 +83,48 @@ class AttackLog(Document):
     stopped_at  = DateTimeField()
 
     meta = {"collection": "attack_logs"}
+
+
+class HostInventory(Document):
+    """Inventory snapshot reported by a VM agent (Wazuh-like host data)."""
+    agent_id     = StringField(required=True)
+    hostname     = StringField()
+    os_name      = StringField()
+    os_version   = StringField()
+    kernel       = StringField()
+    arch         = StringField()
+    domain       = StringField()
+    ips          = ListField(StringField())
+    macs         = ListField(StringField())
+    interfaces   = ListField(DictField())
+    cpu_model    = StringField()
+    cpu_cores    = IntField()
+    ram_mb       = IntField()
+    disk_total_gb = FloatField()
+    disk_free_gb  = FloatField()
+    uptime_sec   = IntField()
+    users        = ListField(StringField())
+    packages     = ListField(StringField())
+    services     = ListField(StringField())
+    open_ports   = ListField(IntField())
+    last_seen    = DateTimeField(default=datetime.utcnow)
+
+    meta = {
+        "collection": "host_inventory",
+        "indexes": ["agent_id", "hostname", "last_seen"],
+    }
+
+
+class AgentRegistry(Document):
+    """User-registered agents to visualize on the dashboard."""
+    agent_id   = StringField(required=True, unique=True)
+    hostname   = StringField()
+    ip         = StringField()
+    os_name    = StringField()
+    notes      = StringField()
+    created_at = DateTimeField(default=datetime.utcnow)
+
+    meta = {
+        "collection": "agent_registry",
+        "indexes": ["agent_id", "hostname", "ip", "created_at"],
+    }

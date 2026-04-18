@@ -8,22 +8,75 @@
  *   - attacks    → Attack Console (ARP spoof, SYN flood, ICMP redirect)
  *   - report     → Session Report + PDF export
  */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Dashboard     from "./pages/Dashboard";
 import SOCDashboard  from "./pages/SOCDashboard";
 import AttackConsole from "./components/AttackConsole";
 import SessionReport from "./components/SessionReport";
+import Inventory     from "./pages/Inventory";
+import Endpoints     from "./pages/Endpoints";
+import Login         from "./pages/Login";
 
 const NAV = [
   { id: "soc",       label: "SOC Monitor",    icon: "🛡" },
+  { id: "endpoints", label: "Endpoints",      icon: "W" },
   { id: "dashboard", label: "Scan Tools",     icon: "⬡" },
+  { id: "inventory", label: "Host Inventory", icon: "🧭" },
   { id: "attacks",   label: "Attack Console", icon: "⚡" },
   { id: "report",    label: "Session Report", icon: "📋" },
 ];
 
+const VALID_PAGES = new Set(NAV.map((item) => item.id));
+
 export default function App() {
-  const [page,          setPage]          = useState("soc");
+  const [auth, setAuth] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("recon.auth");
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [page,          setPage]          = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("recon.page");
+      return VALID_PAGES.has(saved) ? saved : "dashboard";
+    } catch {
+      return "dashboard";
+    }
+  });
   const [activeSession, setActiveSession] = useState(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("recon.page", page);
+    } catch {
+      // Ignore storage failures (private mode, policy restrictions, etc.)
+    }
+  }, [page]);
+
+  function handleLogin(payload) {
+    const session = { user: payload.username || "root", ts: Date.now() };
+    setAuth(session);
+    try {
+      window.localStorage.setItem("recon.auth", JSON.stringify(session));
+    } catch {
+      // Ignore storage failures
+    }
+  }
+
+  function handleLogout() {
+    setAuth(null);
+    try {
+      window.localStorage.removeItem("recon.auth");
+    } catch {
+      // Ignore storage failures
+    }
+  }
+
+  if (!auth) {
+    return <Login onLogin={handleLogin} />;
+  }
 
   return (
     <div style={{ display:"flex", height:"100vh", overflow:"hidden" }}>
@@ -100,14 +153,23 @@ export default function App() {
               <h1 className="text-white font-semibold text-sm flex-1">
                 {NAV.find((n) => n.id === page)?.label}
               </h1>
+              <div className="text-xs text-gray-500">root: {auth.user}</div>
               <div className="flex items-center gap-2 text-xs text-gray-600">
                 <span className="w-2 h-2 rounded-full bg-green-500" />
                 Backend connected
               </div>
+              <button
+                onClick={handleLogout}
+                className="text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 hover:text-gray-200"
+              >
+                Logout
+              </button>
             </header>
 
             <div className="p-6">
+              {page === "endpoints" && <Endpoints />}
               {page === "dashboard" && <Dashboard onSessionStart={setActiveSession} />}
+              {page === "inventory" && <Inventory />}
               {page === "attacks"   && <AttackConsole onSessionStart={setActiveSession} />}
               {page === "report"    && <SessionReport sessionId={activeSession} />}
             </div>

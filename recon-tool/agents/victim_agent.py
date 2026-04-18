@@ -20,13 +20,14 @@ import requests
 from collections import defaultdict
 
 try:
-    from scapy.all import sniff, ARP, TCP, IP, conf
+    from scapy.all import sniff, ARP, TCP, IP, conf, get_if_list, get_if_addr
 except ImportError:
     print("[!] Scapy not found. Run: pip install scapy")
     sys.exit(1)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 DASHBOARD_URL  = "http://192.168.56.1:8000/api/alerts/"   # Host machine IP
+PACKET_URL     = "http://192.168.56.1:8000/api/packets/"
 AGENT_NAME     = "win-victim"
 MY_IP          = "192.168.56.20"
 
@@ -61,6 +62,21 @@ def post_alert(type_, src, dst, severity, message):
         print(f"  [ERR] {e}")
 
 
+def post_packet(summary, flags, src_ip, dst_ip, proto, ttl=0):
+    payload = {
+        "summary": summary,
+        "flags": flags,
+        "src_ip": src_ip,
+        "dst_ip": dst_ip,
+        "protocol": proto,
+        "ttl": ttl,
+    }
+    try:
+        requests.post(PACKET_URL, json=payload, timeout=2)
+    except Exception:
+        pass
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 def on_packet(pkt):
     now = time.time()
@@ -69,6 +85,15 @@ def on_packet(pkt):
     if ARP in pkt and pkt[ARP].op == 2:          # ARP reply
         ip  = pkt[ARP].psrc
         mac = pkt[ARP].hwsrc
+
+        post_packet(
+            summary=f"ARP reply: {ip} is at {mac}",
+            flags="ARP-REPLY",
+            src_ip=ip,
+            dst_ip="broadcast",
+            proto="ARP",
+            ttl=0
+        )
 
         if ip in arp_table and arp_table[ip] != mac:
             # Avoid alert storm for the same IP
@@ -92,6 +117,15 @@ def on_packet(pkt):
     if IP in pkt and TCP in pkt and pkt[TCP].flags == 0x02:   # SYN only
         src   = pkt[IP].src
         dport = pkt[TCP].dport
+
+        post_packet(
+            summary=f"TCP SYN from {src} → {MY_IP}:{dport}",
+            flags="S",
+            src_ip=src,
+            dst_ip=MY_IP,
+            proto="TCP",
+            ttl=pkt[IP].ttl
+        )
 
         # Slide the window
         syn_window[src] = [t for t in syn_window[src] if now - t < SYN_WINDOW]
@@ -135,7 +169,15 @@ def main():
     print("[*] Press Ctrl+C to stop\n")
 
     try:
-        sniff(prn=on_packet, store=False, filter="arp or tcp")
+        iface = conf.iface
+        for name in get_if_list():
+            try:
+                if get_if_addr(name) == MY_IP:
+                    iface = name
+                    break
+            except Exception:
+                continue
+        sniff(prn=on_packet, store=False, filter="arp or tcp", iface=iface)
     except KeyboardInterrupt:
         print("\n[*] Agent stopped.")
     except PermissionError:

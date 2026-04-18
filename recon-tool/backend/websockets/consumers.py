@@ -109,3 +109,18 @@ def broadcast_status(session_id: str, status: str, extra: dict = None):
         f"scan_{session_id}",
         {"type": "packet.event", "data": payload}
     )
+
+
+def broadcast_inventory(inventory_data: dict):
+    """Broadcast host inventory updates on a shared inventory stream."""
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        "scan_inventory",
+        {
+            "type": "packet.event",
+            "data": {
+                "event_type": "inventory",
+                **inventory_data,
+            },
+        }
+    )

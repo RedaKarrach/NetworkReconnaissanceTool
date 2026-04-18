@@ -24,6 +24,9 @@ const STATUS_DOT = {
 function PortCell({ result }) {
   const [showTip, setShowTip] = useState(false);
   const style = STATUS_STYLE[result.status] || STATUS_STYLE.filtered;
+  const protocol = typeof result.protocol === "string" && result.protocol
+    ? result.protocol
+    : "unknown";
 
   return (
     <div
@@ -33,13 +36,13 @@ function PortCell({ result }) {
       onMouseLeave={() => setShowTip(false)}
     >
       <div className="font-bold">{result.port}</div>
-      <div className="text-[9px] opacity-75 uppercase">{result.protocol}</div>
+      <div className="text-[9px] opacity-75 uppercase">{protocol}</div>
 
       {showTip && (
         <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-64
                         bg-gray-900 border border-gray-600 rounded shadow-xl p-2 text-left">
           <div className="text-green-400 font-semibold mb-1">
-            Port {result.port}/{result.protocol.toUpperCase()}
+            Port {result.port}/{protocol.toUpperCase()}
           </div>
           <div className="flex gap-2 mb-1">
             <span className={`w-2 h-2 mt-0.5 rounded-full flex-shrink-0 ${STATUS_DOT[result.status]}`} />

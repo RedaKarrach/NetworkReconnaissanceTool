@@ -7,21 +7,26 @@ a session/thread ID immediately so the frontend can subscribe via WebSocket.
 import uuid
 import json
 import threading
+import platform
+import subprocess
+import ipaddress
 from datetime import datetime
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from django.conf import settings
 
-from models import ScanSession, Host, PortResult, Alert, PacketLog, AttackLog
+from models import ScanSession, Host, PortResult, Alert, PacketLog, AttackLog, HostInventory, AgentRegistry
 from threads.manager import start_thread, stop_thread, get_status
-from websockets.consumers import broadcast_packet, broadcast_alert, broadcast_status
+from websockets.consumers import broadcast_packet, broadcast_alert, broadcast_status, broadcast_inventory
 
 # Import scanner modules
 from scanner.discovery   import arp_sweep
 from scanner.portscan    import run_port_scan
 from scanner.fingerprint import fingerprint_os
 from scanner.attacks     import arp_spoof, syn_flood, icmp_redirect
+from scanner import detection
 
 # PDF report
 from reportlab.lib.pagesizes import letter
@@ -55,6 +60,84 @@ def _log_packet(session, pkt_dict):
         protocol  = pkt_dict.get("protocol", ""),
     ).save()
     broadcast_packet(session.session_id, pkt_dict)
+    broadcast_packet("live", pkt_dict)
+
+
+def _emit_alert(session, alert_dict):
+    """Broadcast alert to session and live SOC stream."""
+    payload = {
+        "event_type": "alert",
+        **alert_dict,
+    }
+    broadcast_alert(session.session_id, payload)
+    broadcast_alert("live", payload)
+
+
+def _get_live_session():
+    session = ScanSession.objects(session_id="live").first()
+    if not session:
+        session = ScanSession(session_id="live", subnet="", status="running")
+        session.save()
+    return session
+
+
+def _check_agent_token(request):
+    """Optional shared-token check for agent POSTs."""
+    expected = getattr(settings, "AGENT_TOKEN", "")
+    if not expected:
+        return True
+
+    header_token = request.headers.get("X-AGENT-TOKEN")
+    auth_header = request.headers.get("Authorization", "")
+    bearer_token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
+    return header_token == expected or bearer_token == expected
+
+
+def _is_ip_reachable(ip: str) -> bool:
+    """Best-effort ICMP reachability check from the server container."""
+    if not ip:
+        return False
+
+    if platform.system().lower().startswith("win"):
+        cmd = ["ping", "-n", "1", "-w", "1000", ip]
+    else:
+        cmd = ["ping", "-c", "1", "-W", "1", ip]
+
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _has_recent_inventory(ip: str) -> bool:
+    """Treat IP as reachable if an agent reported inventory recently."""
+    try:
+        inv = HostInventory.objects(ips=ip).order_by("-last_seen").first()
+        if not inv:
+            return False
+        age = datetime.utcnow() - inv.last_seen
+        return age.total_seconds() < 300
+    except Exception:
+        return False
+
+
+def _is_registered_agent_ip(ip: str) -> bool:
+    try:
+        return AgentRegistry.objects(ip=ip).first() is not None
+    except Exception:
+        return False
+
+
+def _is_ip_allowed(ip: str) -> bool:
+    """Restrict scan targets to a configured subnet if provided."""
+    allowed = getattr(settings, "SCAN_ALLOWED_SUBNET", "")
+    if not allowed:
+        return True
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(allowed, strict=False)
+    except Exception:
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,11 +158,14 @@ class HostDiscoveryView(APIView):
             def on_host(ip, mac):
                 host = Host(session=session, ip=ip, mac=mac)
                 host.save()
-                broadcast_packet(session_id, {
+                packet = {
                     "event_type": "host_found",
                     "ip": ip, "mac": mac,
                     "timestamp": datetime.utcnow().isoformat()
-                })
+                }
+                broadcast_packet(session_id, packet)
+                broadcast_packet("live", packet)
+                detection.check_arp(session, ip, mac, on_alert=lambda a: _emit_alert(session, a))
 
             def on_pkt(pkt_dict):
                 _log_packet(session, pkt_dict)
@@ -91,8 +177,25 @@ class HostDiscoveryView(APIView):
             session.save()
             broadcast_status(session_id, "complete",
                              {"message": "Host discovery finished"})
+            _emit_alert(session, {
+                "type": "host_discovery_complete",
+                "src_ip": "scanner",
+                "dst_ip": subnet,
+                "severity": "low",
+                "message": f"Host discovery completed for {subnet}",
+                "timestamp": datetime.utcnow().isoformat(),
+            })
 
         thread_id = start_thread(target=_run, name=f"discovery-{session_id}")
+
+        _emit_alert(session, {
+            "type": "host_discovery_start",
+            "src_ip": "scanner",
+            "dst_ip": subnet,
+            "severity": "low",
+            "message": f"Host discovery started for {subnet}",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
 
         return Response({
             "session_id": session_id,
@@ -117,6 +220,12 @@ class PortScanView(APIView):
         if not ip:
             return Response({"error": "ip required"}, status=400)
 
+        if not _is_ip_allowed(ip):
+            return Response({"error": "ip not in allowed subnet"}, status=400)
+
+        if not (_is_registered_agent_ip(ip) or _has_recent_inventory(ip) or _is_ip_reachable(ip)):
+            return Response({"error": "ip unreachable"}, status=400)
+
         session, session_id = _new_session()
 
         # Find or create a Host record for this IP
@@ -134,14 +243,17 @@ class PortScanView(APIView):
                     status   = res["status"],
                     banner   = res.get("banner", "")
                 ).save()
-                broadcast_packet(session_id, {
+                packet = {
                     "event_type": "port_result",
                     "ip": ip,
                     "port": res["port"],
                     "status": res["status"],
                     "banner": res.get("banner", ""),
                     "timestamp": datetime.utcnow().isoformat()
-                })
+                }
+                broadcast_packet(session_id, packet)
+                broadcast_packet("live", packet)
+                detection.check_port_sweep(session, "scanner", res["port"], on_alert=lambda a: _emit_alert(session, a))
 
             def on_pkt(pkt_dict):
                 _log_packet(session, pkt_dict)
@@ -154,8 +266,25 @@ class PortScanView(APIView):
             session.save()
             broadcast_status(session_id, "complete",
                              {"message": "Port scan finished"})
+            _emit_alert(session, {
+                "type": "port_scan_complete",
+                "src_ip": "scanner",
+                "dst_ip": ip,
+                "severity": "low",
+                "message": f"Port scan completed for {ip}",
+                "timestamp": datetime.utcnow().isoformat(),
+            })
 
         thread_id = start_thread(target=_run, name=f"portscan-{ip}")
+
+        _emit_alert(session, {
+            "type": "port_scan_start",
+            "src_ip": "scanner",
+            "dst_ip": ip,
+            "severity": "low",
+            "message": f"Port scan started for {ip} ({len(ports)} ports)",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
 
         return Response({
             "session_id": session_id,
@@ -179,6 +308,12 @@ class OSFingerprintView(APIView):
         if not ip:
             return Response({"error": "ip required"}, status=400)
 
+        if not _is_ip_allowed(ip):
+            return Response({"error": "ip not in allowed subnet"}, status=400)
+
+        if not (_is_registered_agent_ip(ip) or _has_recent_inventory(ip) or _is_ip_reachable(ip)):
+            return Response({"error": "ip unreachable"}, status=400)
+
         session, session_id = _new_session()
 
         def _run(stop_flag):
@@ -195,7 +330,7 @@ class OSFingerprintView(APIView):
             host_doc.confidence = result["confidence"]
             host_doc.save()
 
-            broadcast_packet(session_id, {
+            packet = {
                 "event_type":   "os_result",
                 "ip":           ip,
                 "os_guess":     result["os_guess"],
@@ -205,14 +340,33 @@ class OSFingerprintView(APIView):
                 "xmas_result":  result["xmas_result"],
                 "details":      result["details"],
                 "timestamp":    datetime.utcnow().isoformat()
-            })
+            }
+            broadcast_packet(session_id, packet)
+            broadcast_packet("live", packet)
 
             session.status = "complete"
             session.save()
             broadcast_status(session_id, "complete",
                              {"message": "OS fingerprint complete"})
+            _emit_alert(session, {
+                "type": "os_fingerprint_complete",
+                "src_ip": "scanner",
+                "dst_ip": ip,
+                "severity": "low",
+                "message": f"OS fingerprint completed for {ip}",
+                "timestamp": datetime.utcnow().isoformat(),
+            })
 
         thread_id = start_thread(target=_run, name=f"osfp-{ip}")
+
+        _emit_alert(session, {
+            "type": "os_fingerprint_start",
+            "src_ip": "scanner",
+            "dst_ip": ip,
+            "severity": "low",
+            "message": f"OS fingerprint started for {ip}",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
 
         return Response({
             "session_id": session_id,
@@ -262,6 +416,15 @@ class ARPSpoofView(APIView):
 
         thread_id = start_thread(target=_run, name=f"arp-spoof-{target_ip}")
 
+        _emit_alert(session, {
+            "type": "arp_spoof",
+            "src_ip": "attacker",
+            "dst_ip": target_ip,
+            "severity": "high",
+            "message": f"ARP spoof started against {target_ip} via {gateway_ip}",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
         return Response({
             "session_id": session_id,
             "thread_id":  thread_id,
@@ -299,6 +462,7 @@ class SYNFloodView(APIView):
                 attack_log.packets_sent += 1
                 attack_log.save()
                 _log_packet(session, pkt_dict)
+                detection.check_syn_flood(session, target_ip, target_port, on_alert=lambda a: _emit_alert(session, a))
 
             syn_flood(target_ip, target_port, stop_flag, on_packet=on_pkt)
 
@@ -309,6 +473,15 @@ class SYNFloodView(APIView):
                              {"message": "SYN flood stopped"})
 
         thread_id = start_thread(target=_run, name=f"syn-flood-{target_ip}")
+
+        _emit_alert(session, {
+            "type": "syn_flood",
+            "src_ip": "spoofed",
+            "dst_ip": target_ip,
+            "severity": "critical",
+            "message": f"SYN flood started against {target_ip}:{target_port}",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
 
         return Response({
             "session_id":  session_id,
@@ -336,6 +509,179 @@ class StopThreadView(APIView):
             "thread_id": thread_id,
             "stopped":   stopped
         })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6b. Agent inventory ingestion
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InventoryIngestView(APIView):
+    """POST /api/agents/inventory/  { inventory payload }"""
+
+    def post(self, request):
+        if not _check_agent_token(request):
+            return Response({"error": "unauthorized"}, status=401)
+
+        data = request.data or {}
+        agent_id = data.get("agent_id") or data.get("hostname")
+        if not agent_id:
+            return Response({"error": "agent_id or hostname required"}, status=400)
+
+        def _limit_list(value, max_items=200):
+            if not isinstance(value, list):
+                return []
+            return value[:max_items]
+
+        inventory = HostInventory.objects(agent_id=agent_id).first()
+        if not inventory:
+            inventory = HostInventory(agent_id=agent_id)
+
+        inventory.hostname     = data.get("hostname")
+        inventory.os_name      = data.get("os_name")
+        inventory.os_version   = data.get("os_version")
+        inventory.kernel       = data.get("kernel")
+        inventory.arch         = data.get("arch")
+        inventory.domain       = data.get("domain")
+        inventory.ips          = _limit_list(data.get("ips"), 64)
+        inventory.macs         = _limit_list(data.get("macs"), 64)
+        inventory.interfaces   = _limit_list(data.get("interfaces"), 64)
+        inventory.cpu_model    = data.get("cpu_model")
+        inventory.cpu_cores    = data.get("cpu_cores")
+        inventory.ram_mb       = data.get("ram_mb")
+        inventory.disk_total_gb = data.get("disk_total_gb")
+        inventory.disk_free_gb  = data.get("disk_free_gb")
+        inventory.uptime_sec   = data.get("uptime_sec")
+        inventory.users        = _limit_list(data.get("users"), 200)
+        inventory.packages     = _limit_list(data.get("packages"), 500)
+        inventory.services     = _limit_list(data.get("services"), 300)
+        inventory.open_ports   = _limit_list(data.get("open_ports"), 200)
+        inventory.last_seen    = datetime.utcnow()
+        inventory.save()
+
+        payload = {
+            "agent_id": agent_id,
+            "hostname": inventory.hostname,
+            "os_name": inventory.os_name,
+            "os_version": inventory.os_version,
+            "arch": inventory.arch,
+            "ips": inventory.ips,
+            "macs": inventory.macs,
+            "cpu_model": inventory.cpu_model,
+            "cpu_cores": inventory.cpu_cores,
+            "ram_mb": inventory.ram_mb,
+            "disk_total_gb": inventory.disk_total_gb,
+            "disk_free_gb": inventory.disk_free_gb,
+            "uptime_sec": inventory.uptime_sec,
+            "last_seen": inventory.last_seen.isoformat(),
+        }
+        broadcast_inventory(payload)
+
+        return Response({"status": "ok", "agent_id": agent_id}, status=201)
+
+
+class InventoryLatestView(APIView):
+    """GET /api/agents/inventory/latest/"""
+
+    def get(self, request):
+        items = HostInventory.objects.order_by("-last_seen")
+        limit = int(request.query_params.get("limit", 50))
+        limit = min(max(limit, 1), 200)
+
+        payload = []
+        for inv in items[:limit]:
+            payload.append({
+                "agent_id": inv.agent_id,
+                "hostname": inv.hostname,
+                "os_name": inv.os_name,
+                "os_version": inv.os_version,
+                "kernel": inv.kernel,
+                "arch": inv.arch,
+                "domain": inv.domain,
+                "ips": inv.ips,
+                "macs": inv.macs,
+                "interfaces": inv.interfaces,
+                "cpu_model": inv.cpu_model,
+                "cpu_cores": inv.cpu_cores,
+                "ram_mb": inv.ram_mb,
+                "disk_total_gb": inv.disk_total_gb,
+                "disk_free_gb": inv.disk_free_gb,
+                "uptime_sec": inv.uptime_sec,
+                "users": inv.users,
+                "packages": inv.packages,
+                "services": inv.services,
+                "open_ports": inv.open_ports,
+                "last_seen": inv.last_seen.isoformat(),
+            })
+
+        return Response({"items": payload})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6c. Agent registry (manual UI entries)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AgentRegistryView(APIView):
+    """GET/POST /api/agents/registry/"""
+
+    def get(self, request):
+        items = AgentRegistry.objects.order_by("-created_at")
+        payload = []
+        for a in items:
+            payload.append({
+                "agent_id": a.agent_id,
+                "hostname": a.hostname,
+                "ip": a.ip,
+                "os_name": a.os_name,
+                "notes": a.notes,
+                "created_at": a.created_at.isoformat(),
+            })
+        return Response({"items": payload})
+
+    def post(self, request):
+        data = request.data or {}
+        agent_id = data.get("agent_id")
+        if not agent_id:
+            return Response({"error": "agent_id required"}, status=400)
+
+        existing = AgentRegistry.objects(agent_id=agent_id).first()
+        if existing:
+            return Response({"error": "agent_id already exists"}, status=409)
+
+        ip = data.get("ip")
+        if ip and AgentRegistry.objects(ip=ip).first():
+            return Response({"error": "ip already exists"}, status=409)
+
+        agent = AgentRegistry(
+            agent_id=agent_id,
+            hostname=data.get("hostname"),
+            ip=ip,
+            os_name=data.get("os_name"),
+            notes=data.get("notes"),
+        )
+        agent.save()
+
+        return Response({"status": "ok", "agent_id": agent_id}, status=201)
+
+    def delete(self, request):
+        data = request.data or {}
+        agent_id = data.get("agent_id")
+        ip = data.get("ip")
+
+        if not agent_id and not ip:
+            return Response({"error": "agent_id or ip required"}, status=400)
+
+        query = {}
+        if agent_id:
+            query["agent_id"] = agent_id
+        if ip:
+            query["ip"] = ip
+
+        agent = AgentRegistry.objects(**query).first()
+        if not agent:
+            return Response({"error": "agent not found"}, status=404)
+
+        agent.delete()
+        return Response({"status": "deleted"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -490,16 +836,7 @@ class InboundAlertView(APIView):
     }
     """
     def post(self, request):
-        # Reuse the current running session or create a live one
-        session = ScanSession.objects(status="running").first()
-        if not session:
-            import uuid as _uuid
-            session = ScanSession(
-                session_id = str(_uuid.uuid4()),
-                subnet     = "192.168.56.0/24",
-                status     = "running",
-            )
-            session.save()
+        session = _get_live_session()
 
         alert = Alert(
             session  = session,
@@ -511,9 +848,7 @@ class InboundAlertView(APIView):
         )
         alert.save()
 
-        # Broadcast immediately to all WebSocket clients
-        broadcast_alert(session.session_id, {
-            "event_type": "alert",
+        _emit_alert(session, {
             "agent":      request.data.get("agent", "unknown"),
             "type":       alert.type,
             "src_ip":     alert.src_ip,
@@ -528,3 +863,38 @@ class InboundAlertView(APIView):
             "session_id": session.session_id,
             "alert_id":   str(alert.id),
         }, status=201)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. Inbound packet events from VM agents
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InboundPacketView(APIView):
+    """POST /api/packets/  { packet summary }"""
+
+    def post(self, request):
+        session = _get_live_session()
+
+        pkt = {
+            "summary":  request.data.get("summary", ""),
+            "flags":    request.data.get("flags", ""),
+            "ttl":      request.data.get("ttl", 0),
+            "src_ip":   request.data.get("src_ip", ""),
+            "dst_ip":   request.data.get("dst_ip", ""),
+            "protocol": request.data.get("protocol", ""),
+            "timestamp": request.data.get("timestamp", datetime.utcnow().isoformat()),
+        }
+
+        PacketLog(
+            session   = session,
+            summary   = pkt["summary"],
+            flags     = pkt["flags"],
+            ttl       = pkt["ttl"],
+            src_ip    = pkt["src_ip"],
+            dst_ip    = pkt["dst_ip"],
+            protocol  = pkt["protocol"],
+        ).save()
+
+        broadcast_packet("live", pkt)
+
+        return Response({"status": "ok"}, status=201)

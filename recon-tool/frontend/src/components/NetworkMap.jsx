@@ -22,7 +22,7 @@ function getColor(os) {
   return OS_COLORS.unknown;
 }
 
-export default function NetworkMap({ hosts = [], onSelectHost }) {
+export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 }) {
   const svgRef    = useRef(null);
   const [selected, setSelected] = useState(null);
 
@@ -45,9 +45,10 @@ export default function NetworkMap({ hosts = [], onSelectHost }) {
     }));
 
     // Build nodes: scanner at center + discovered hosts
+    const trimmedHosts = hosts.slice(0, maxHosts);
     const nodes = [
       { id: "scanner", label: "Scanner", os: "scanner", type: "scanner" },
-      ...hosts.map((h) => ({
+      ...trimmedHosts.map((h) => ({
         id:    h.ip,
         label: h.ip,
         mac:   h.mac,
@@ -56,7 +57,7 @@ export default function NetworkMap({ hosts = [], onSelectHost }) {
       })),
     ];
 
-    const links = hosts.map((h) => ({
+    const links = trimmedHosts.map((h) => ({
       source: "scanner",
       target: h.ip,
     }));

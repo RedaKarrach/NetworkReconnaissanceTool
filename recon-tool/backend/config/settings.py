@@ -8,6 +8,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-secret-key-change-me")
 DEBUG      = os.environ.get("DEBUG", "True") == "True"
+AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
+SCAN_ALLOWED_SUBNET = os.environ.get("SCAN_ALLOWED_SUBNET", "192.168.56.0/24")
 
 ALLOWED_HOSTS = ["*"]
 

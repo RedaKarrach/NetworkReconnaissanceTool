@@ -32,8 +32,6 @@ services:
       - DJANGO_SETTINGS_MODULE=config.settings
     # OneDrive reparse-point mounts can hide files in Linux containers.
     # Run from the image filesystem in this setup.
-    ports:
-      - "8000:8000"
     depends_on:
       mongo:
         condition: service_healthy
@@ -41,7 +39,8 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    network_mode: host        # needed for Scapy to see real network interfaces
+    ports:
+      - "8000:8000"
     command: >
       sh -c "python manage.py migrate --run-syncdb &&
              daphne -b 0.0.0.0 -p 8000 config.asgi:application"
