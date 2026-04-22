@@ -8,27 +8,31 @@ import React, { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 
 const OS_COLORS = {
-  Windows:    "#3b82f6",
-  Linux:      "#22c55e",
-  macOS:      "#a855f7",
-  "Cisco/BSD":"#f97316",
-  unknown:    "#6b7280",
+  windows: "var(--color-os-windows)",
+  linux: "var(--color-os-linux)",
+  macos: "var(--color-os-macos)",
+  unknown: "var(--color-os-unknown)",
 };
 
 function getColor(os) {
-  for (const key of Object.keys(OS_COLORS)) {
-    if (os && os.includes(key)) return OS_COLORS[key];
-  }
+  const value = String(os || "").toLowerCase();
+  if (value.includes("linux")) return OS_COLORS.linux;
+  if (value.includes("windows")) return OS_COLORS.windows;
+  if (value.includes("mac")) return OS_COLORS.macos;
   return OS_COLORS.unknown;
 }
 
 export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 }) {
-  const svgRef    = useRef(null);
+  const svgRef = useRef(null);
+  const tooltipRef = useRef(null);
+  const zoomInRef = useRef(null);
+  const zoomOutRef = useRef(null);
+  const zoomResetRef = useRef(null);
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
     if (!svgRef.current) return;
-    const width  = svgRef.current.clientWidth  || 800;
+    const width = svgRef.current.clientWidth || 800;
     const height = svgRef.current.clientHeight || 500;
 
     // Clear previous render
@@ -40,9 +44,10 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
 
     // Add zoom support
     const g = svg.append("g");
-    svg.call(d3.zoom().scaleExtent([0.3, 3]).on("zoom", (e) => {
+    const zoom = d3.zoom().scaleExtent([0.3, 3]).on("zoom", (e) => {
       g.attr("transform", e.transform);
-    }));
+    });
+    svg.call(zoom);
 
     // Build nodes: scanner at center + discovered hosts
     const trimmedHosts = hosts.slice(0, maxHosts);
@@ -74,9 +79,9 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
       .selectAll("line")
       .data(links)
       .join("line")
-      .attr("stroke", "#374151")
-      .attr("stroke-width", 1.5)
-      .attr("stroke-dasharray", "4 2");
+      .attr("stroke", "rgba(255,255,255,0.08)")
+      .attr("stroke-width", 1)
+      .attr("stroke-dasharray", "4 4");
 
     // Draw node groups
     const node = g.append("g")
@@ -92,15 +97,44 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
       .on("click", (e, d) => {
         setSelected(d.id);
         if (onSelectHost) onSelectHost(d);
+      })
+      .on("mouseover", (e, d) => {
+        if (!tooltipRef.current || d.type !== "host") return;
+
+        const openPorts = Array.isArray(d.open_ports) ? d.open_ports.length : (Number(d.open_ports) || 0);
+        tooltipRef.current.innerHTML = `
+          <div class="font-mono text-sm font-bold text-text-primary">${d.label}</div>
+          <div class="mt-1 font-mono text-xs text-text-tertiary">${d.mac || "N/A"}</div>
+          <div class="mt-1 text-sm text-text-secondary">${d.os || "unknown"}</div>
+          <div class="text-sm text-text-tertiary">open ports: ${openPorts}</div>
+        `;
+        tooltipRef.current.style.opacity = "1";
+      })
+      .on("mousemove", (e) => {
+        if (!tooltipRef.current || !svgRef.current) return;
+        const rect = svgRef.current.getBoundingClientRect();
+        tooltipRef.current.style.left = `${e.clientX - rect.left + 12}px`;
+        tooltipRef.current.style.top = `${e.clientY - rect.top + 12}px`;
+      })
+      .on("mouseout", () => {
+        if (!tooltipRef.current) return;
+        tooltipRef.current.style.opacity = "0";
       });
+
+    node.append("circle")
+      .attr("r", 32)
+      .attr("fill", "none")
+      .attr("stroke", (d) => (d.type === "scanner" ? "var(--color-accent-primary)" : getColor(d.os)))
+      .attr("stroke-width", 1.5)
+      .attr("opacity", (d) => (d.id === selected ? 0.3 : 0))
+      .style("animation", (d) => (d.id === selected ? "pulse-critical 2s ease-in-out infinite" : "none"));
 
     // Circles
     node.append("circle")
-      .attr("r", (d) => d.type === "scanner" ? 22 : 18)
-      .attr("fill", (d) => d.type === "scanner" ? "#1d4ed8" : getColor(d.os))
-      .attr("stroke", "#fff")
-      .attr("stroke-width", 2)
-      .attr("opacity", 0.9);
+      .attr("r", (d) => (d.id === selected ? 26 : 20))
+      .attr("fill", (d) => (d.type === "scanner" ? "var(--color-accent-primary)" : getColor(d.os)))
+      .attr("stroke", "rgba(255,255,255,0.15)")
+      .attr("stroke-width", 1.5);
 
     // Icons / labels inside circle
     node.append("text")
@@ -113,24 +147,21 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
 
     // Label below circle
     node.append("text")
-      .attr("y", 28)
+      .attr("y", 34)
       .attr("text-anchor", "middle")
+      .attr("font-family", "JetBrains Mono, Fira Code, monospace")
       .attr("font-size", "11px")
-      .attr("fill", "#d1d5db")
+      .attr("fill", "rgba(255,255,255,0.9)")
       .text((d) => d.label);
 
     // OS sub-label
     node.filter((d) => d.type === "host")
       .append("text")
-      .attr("y", 40)
+      .attr("y", 48)
       .attr("text-anchor", "middle")
       .attr("font-size", "9px")
-      .attr("fill", "#9ca3af")
+      .attr("fill", "rgba(255,255,255,0.5)")
       .text((d) => d.os);
-
-    // Tooltip
-    node.append("title")
-      .text((d) => `IP: ${d.label}\nMAC: ${d.mac || "?"}\nOS: ${d.os}`);
 
     simulation.on("tick", () => {
       link
@@ -141,29 +172,81 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
       node.attr("transform", (d) => `translate(${d.x},${d.y})`);
     });
 
-    return () => simulation.stop();
-  }, [hosts]);
+    if (zoomInRef.current) {
+      d3.select(zoomInRef.current).on("click", () => {
+        svg.transition().duration(150).call(zoom.scaleBy, 1.2);
+      });
+    }
+    if (zoomOutRef.current) {
+      d3.select(zoomOutRef.current).on("click", () => {
+        svg.transition().duration(150).call(zoom.scaleBy, 0.8);
+      });
+    }
+    if (zoomResetRef.current) {
+      d3.select(zoomResetRef.current).on("click", () => {
+        svg.transition().duration(150).call(zoom.transform, d3.zoomIdentity);
+      });
+    }
+
+    return () => {
+      simulation.stop();
+      if (zoomInRef.current) d3.select(zoomInRef.current).on("click", null);
+      if (zoomOutRef.current) d3.select(zoomOutRef.current).on("click", null);
+      if (zoomResetRef.current) d3.select(zoomResetRef.current).on("click", null);
+    };
+  }, [hosts, maxHosts, onSelectHost, selected]);
 
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-700 p-4 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-white font-semibold text-sm tracking-wide uppercase">Network Map</h2>
-        <div className="flex gap-3">
-          {Object.entries(OS_COLORS).map(([os, color]) => (
-            <span key={os} className="flex items-center gap-1 text-xs text-gray-400">
-              <span className="w-2 h-2 rounded-full inline-block" style={{ background: color }} />
-              {os}
-            </span>
-          ))}
+    <div className="relative h-full w-full overflow-hidden rounded-lg bg-bg-app">
+      <svg ref={svgRef} className="h-full w-full" style={{ minHeight: 400 }} />
+
+      <div
+        ref={tooltipRef}
+        className="pointer-events-none absolute z-50 rounded-lg border border-border-elevated bg-bg-elevated p-3 text-sm shadow-card transition-opacity duration-150"
+        style={{ opacity: 0 }}
+      />
+
+      <div className="absolute bottom-4 right-4 rounded-md border border-border-elevated bg-bg-elevated/80 p-2 backdrop-blur">
+        <div className="flex items-center gap-2 text-xs text-text-secondary">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OS_COLORS.linux }} />
+          Linux
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OS_COLORS.windows }} />
+          Windows
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OS_COLORS.macos }} />
+          macOS
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OS_COLORS.unknown }} />
+          unknown
         </div>
       </div>
-      <div className="flex-1 relative">
-        {hosts.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
-            No hosts discovered yet — run a host discovery scan
-          </div>
-        )}
-        <svg ref={svgRef} className="w-full h-full" style={{ minHeight: 400 }} />
+
+      <div className="absolute right-4 top-4 flex flex-col gap-2">
+        <button
+          ref={zoomInRef}
+          type="button"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-border-default bg-bg-elevated text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
+        >
+          +
+        </button>
+        <button
+          ref={zoomOutRef}
+          type="button"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-border-default bg-bg-elevated text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
+        >
+          -
+        </button>
+        <button
+          ref={zoomResetRef}
+          type="button"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-border-default bg-bg-elevated text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
+        >
+          ⊕
+        </button>
       </div>
     </div>
   );

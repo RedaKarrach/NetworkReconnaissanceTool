@@ -12,9 +12,7 @@ const ATTACK_TYPES = [
   {
     id:    "arp_spoof",
     label: "ARP Spoof",
-    icon:  "🕸️",
     desc:  "Poison ARP caches of target + gateway to intercept traffic (MITM)",
-    color: "orange",
     fields: [
       { key: "target_ip",  label: "Target IP",  placeholder: "192.168.56.101" },
       { key: "gateway_ip", label: "Gateway IP", placeholder: "192.168.56.1" },
@@ -23,9 +21,7 @@ const ATTACK_TYPES = [
   {
     id:    "syn_flood",
     label: "SYN Flood",
-    icon:  "🌊",
     desc:  "Overwhelm a TCP port with spoofed SYN packets to exhaust connection tables",
-    color: "red",
     fields: [
       { key: "target_ip",   label: "Target IP",   placeholder: "192.168.56.101" },
       { key: "target_port", label: "Target Port", placeholder: "80" },
@@ -34,9 +30,7 @@ const ATTACK_TYPES = [
   {
     id:    "icmp_redirect",
     label: "ICMP Redirect",
-    icon:  "↩️",
     desc:  "Forge ICMP redirect messages to reroute victim traffic through attacker",
-    color: "purple",
     fields: [
       { key: "target_ip",       label: "Target IP",        placeholder: "192.168.56.101" },
       { key: "spoofed_gateway", label: "Spoofed Gateway",  placeholder: "192.168.56.1" },
@@ -46,85 +40,120 @@ const ATTACK_TYPES = [
   },
 ];
 
+const ATTACK_STYLE = {
+  arp_spoof: {
+    iconWrap: "bg-threat-high/15",
+    iconText: "text-threat-high-text",
+    launchBtn: "bg-gradient-to-r from-threat-high to-threat-medium text-text-primary",
+  },
+  syn_flood: {
+    iconWrap: "bg-threat-critical/15",
+    iconText: "text-threat-critical-text",
+    launchBtn: "bg-gradient-to-r from-threat-critical to-threat-high text-text-primary",
+  },
+  icmp_redirect: {
+    iconWrap: "bg-os-macos/15",
+    iconText: "text-os-macos",
+    launchBtn: "bg-gradient-to-r from-os-macos to-accent-primary text-text-primary",
+  },
+};
+
+function AttackIcon({ attackId, className }) {
+  if (attackId === "arp_spoof") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+        <path d="M4 7h6" />
+        <path d="m8 4 3 3-3 3" />
+        <path d="M20 17h-6" />
+        <path d="m16 14-3 3 3 3" />
+        <circle cx="5" cy="17" r="2" />
+        <circle cx="19" cy="7" r="2" />
+      </svg>
+    );
+  }
+
+  if (attackId === "syn_flood") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+        <path d="M3 14c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0 3 2 4.5 0" />
+        <path d="M3 9c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0 3 2 4.5 0" />
+        <path d="M12 3v6" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className}>
+      <path d="M5 12h12" />
+      <path d="m13 6 6 6-6 6" />
+      <path d="M5 6v12" />
+    </svg>
+  );
+}
+
 function AttackCard({ attack, activeThreads, onLaunch, onStop }) {
   const [params, setParams] = useState({});
   const activeEntry = activeThreads.find((t) => t.attackId === attack.id);
   const isRunning   = !!activeEntry;
-
-  const borderColor = {
-    orange: "border-orange-700 hover:border-orange-500",
-    red:    "border-red-800   hover:border-red-600",
-    purple: "border-purple-800 hover:border-purple-600",
-  }[attack.color];
-
-  const btnColor = {
-    orange: "bg-orange-700 hover:bg-orange-600 text-white",
-    red:    "bg-red-700    hover:bg-red-600    text-white",
-    purple: "bg-purple-700 hover:bg-purple-600 text-white",
-  }[attack.color];
+  const style = ATTACK_STYLE[attack.id] || ATTACK_STYLE.arp_spoof;
 
   return (
-    <div className={`bg-gray-800 border rounded-xl p-4 transition-colors ${borderColor}`}>
-      <div className="flex items-start gap-3 mb-3">
-        <span className="text-2xl">{attack.icon}</span>
-        <div>
-          <h3 className="text-white font-semibold">{attack.label}</h3>
-          <p className="text-gray-500 text-xs mt-0.5">{attack.desc}</p>
+    <div
+      className={`flex flex-col rounded-lg border bg-bg-card p-5 transition-all duration-200 ${
+        isRunning
+          ? "border-border-danger shadow-danger animate-pulse-critical"
+          : "border-border-default"
+      }`}
+    >
+      <div className="mb-4 flex items-center gap-3">
+        <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${style.iconWrap}`}>
+          <AttackIcon attackId={attack.id} className={`h-5 w-5 ${style.iconText}`} />
         </div>
-        {isRunning && (
-          <div className="ml-auto flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-            <span className="text-red-400 text-xs font-medium">RUNNING</span>
-          </div>
-        )}
+        <div>
+          <h3 className="font-semibold text-text-primary">{attack.label}</h3>
+        </div>
+        <div className="ml-auto">
+          {isRunning ? (
+            <span className="inline-flex items-center gap-1 rounded-sm bg-threat-critical/15 px-2 py-0.5 text-xs text-threat-critical">
+              <span className="h-1.5 w-1.5 rounded-full bg-threat-critical animate-pulse" />
+              ● Running
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-sm bg-bg-elevated px-2 py-0.5 text-xs text-text-tertiary">Idle</span>
+          )}
+        </div>
       </div>
 
-      {/* Parameter inputs */}
-      <div className="grid grid-cols-2 gap-2 mb-3">
+      <p className="mb-4 text-xs leading-relaxed text-text-tertiary">{attack.desc}</p>
+
+      <div className="flex flex-1 flex-col gap-3">
         {attack.fields.map((f) => (
           <div key={f.key}>
-            <label className="text-gray-500 text-xs mb-1 block">{f.label}</label>
+            <label className="mb-1 block text-xs text-text-secondary">{f.label}</label>
             <input
               type="text"
               placeholder={f.placeholder}
               value={params[f.key] || ""}
               onChange={(e) => setParams((p) => ({ ...p, [f.key]: e.target.value }))}
               disabled={isRunning}
-              className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1.5
-                         text-sm text-gray-300 font-mono placeholder-gray-700
-                         focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+              className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-border focus:outline-none disabled:opacity-50"
             />
           </div>
         ))}
       </div>
 
-      {/* Stats when running */}
-      {isRunning && activeEntry.pktCount !== undefined && (
-        <div className="flex gap-4 mb-3 text-xs">
-          <div className="bg-gray-900 rounded px-3 py-1.5">
-            <div className="text-gray-500">Packets sent</div>
-            <div className="text-green-400 font-mono text-lg">{activeEntry.pktCount}</div>
-          </div>
-          <div className="bg-gray-900 rounded px-3 py-1.5">
-            <div className="text-gray-500">Thread ID</div>
-            <div className="text-cyan-400 font-mono text-[10px] truncate w-32">{activeEntry.threadId}</div>
-          </div>
-        </div>
-      )}
-
-      <div className="flex gap-2">
+      <div className="mt-4">
         {!isRunning ? (
           <button
             onClick={() => onLaunch(attack.id, params)}
-            className={`flex-1 py-2 rounded font-medium text-sm transition-colors ${btnColor}`}
+            className={`w-full rounded-md py-3 font-semibold transition-all duration-150 hover:-translate-y-px hover:shadow-danger active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 ${style.launchBtn}`}
           >
-            Launch {attack.label}
+            ⚡ Launch Attack
           </button>
         ) : (
           <button
             onClick={() => onStop(activeEntry.threadId, attack.id)}
-            className="flex-1 py-2 rounded font-medium text-sm
-                       bg-gray-700 hover:bg-gray-600 text-white transition-colors"
+            className="w-full rounded-md border border-border-danger bg-bg-elevated py-3 font-semibold text-threat-critical transition-all duration-150 hover:-translate-y-px hover:shadow-danger active:scale-[0.98]"
           >
             ■ Stop Attack
           </button>
@@ -140,7 +169,7 @@ export default function AttackConsole({ onSessionStart }) {
   const [log,           setLog]           = useState([]);
 
   function addLog(msg, type = "info") {
-    setLog((prev) => [{ ts: new Date().toLocaleTimeString(), msg, type }, ...prev].slice(0, 100));
+    setLog((prev) => [{ ts: new Date().toLocaleTimeString(), msg, type }, ...prev].slice(0, 20));
   }
 
   async function handleLaunch(attackId, params) {
@@ -183,21 +212,15 @@ export default function AttackConsole({ onSessionStart }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div>
       {/* Warning banner */}
-      <div className="bg-red-950 border border-red-700 rounded-xl p-3 flex items-start gap-3">
-        <span className="text-red-400 text-lg">⚠️</span>
-        <div>
-          <div className="text-red-400 font-semibold text-sm">Authorised Lab Use Only</div>
-          <div className="text-red-500 text-xs mt-0.5">
-            These tools are for educational purposes in isolated VM environments only.
-            Running them against systems you don't own is illegal.
-          </div>
-        </div>
+      <div className="mb-4 flex items-center gap-2 rounded-lg border border-threat-high/30 bg-threat-high/10 px-4 py-3 text-sm text-threat-high">
+        <span className="text-threat-high">⚠</span>
+        <span>Authorized lab environment only — 192.168.56.0/24 network</span>
       </div>
 
       {/* Attack cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {ATTACK_TYPES.map((a) => (
           <AttackCard
             key={a.id}
@@ -211,29 +234,35 @@ export default function AttackConsole({ onSessionStart }) {
 
       {/* Error */}
       {error && (
-        <div className="bg-red-900/50 border border-red-700 rounded px-3 py-2 text-red-300 text-sm">
+        <div className="mt-4 rounded-md border border-border-danger bg-threat-critical/15 px-3 py-2 text-sm text-threat-critical">
           {error}
         </div>
       )}
 
       {/* Activity log */}
-      <div className="bg-gray-900 rounded-xl border border-gray-700 p-4">
-        <h3 className="text-gray-400 text-xs uppercase tracking-wide mb-2">Attack Log</h3>
-        <div className="space-y-1 font-mono text-xs max-h-40 overflow-y-auto">
-          {log.length === 0 && (
-            <div className="text-gray-700">No activity yet</div>
+      <div className="mt-6 overflow-hidden rounded-lg border border-border-default bg-bg-card">
+        <div className="px-4 pt-3 text-xs uppercase tracking-widest text-text-tertiary">ACTIVITY LOG</div>
+        <div className="max-h-48 overflow-y-auto font-mono text-xs">
+          {log.length === 0 ? (
+            <div className="px-4 py-2 text-text-tertiary">No activity yet</div>
+          ) : (
+            log.map((entry, i) => {
+              const marker =
+                entry.type === "success"
+                  ? { label: "[START]", className: "text-threat-critical" }
+                  : entry.type === "warn"
+                    ? { label: "[STOP]", className: "text-status-success" }
+                    : { label: "[INFO]", className: "text-accent-primary" };
+
+              return (
+                <div key={i} className="border-b border-border-default/30 px-4 py-1.5">
+                  <span className="mr-3 text-text-tertiary">{entry.ts}</span>
+                  <span className={`mr-2 ${marker.className}`}>{marker.label}</span>
+                  <span className="text-text-secondary">{entry.msg}</span>
+                </div>
+              );
+            })
           )}
-          {log.map((entry, i) => (
-            <div key={i} className={`flex gap-2 ${
-              entry.type === "error"   ? "text-red-400" :
-              entry.type === "success" ? "text-green-400" :
-              entry.type === "warn"    ? "text-yellow-400" :
-              "text-gray-400"
-            }`}>
-              <span className="text-gray-700">{entry.ts}</span>
-              <span>{entry.msg}</span>
-            </div>
-          ))}
         </div>
       </div>
     </div>

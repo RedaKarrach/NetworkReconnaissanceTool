@@ -1,24 +1,223 @@
+/* ═══════════════════════════════════════════════
+   DESIGN SYSTEM REFERENCE
+   ═══════════════════════════════════════════════
+   bg-app: #0A0F17 - app shell background
+   bg-sidebar: #0E1522 - sidebar surface
+   bg-card: #121B2A - primary card surface
+   bg-card-hover: #162235 - card hover state
+   bg-elevated: #1A2740 - elevated surfaces, dropdowns, modals
+   bg-input: #0F1726 - form fields
+
+   threat-critical: #EF4444 - critical severity default
+   threat-critical-bg: #3A1114 - critical background tint
+   threat-critical-border: #7F1D1D - critical border
+   threat-critical-text: #FECACA - critical text
+   threat-critical-glow: #F87171 - critical glow
+
+   threat-high: #F59E0B - high severity default
+   threat-high-bg: #3B2A0A - high background tint
+   threat-high-border: #7A5A12 - high border
+   threat-high-text: #FDE68A - high text
+   threat-high-glow: #FBBF24 - high glow
+
+   threat-medium: #F97316 - medium severity default
+   threat-medium-bg: #3C1E0E - medium background tint
+   threat-medium-border: #7C3B13 - medium border
+   threat-medium-text: #FDBA74 - medium text
+   threat-medium-glow: #FB923C - medium glow
+
+   threat-low: #3B82F6 - low severity default
+   threat-low-bg: #0E223F - low background tint
+   threat-low-border: #1D4ED8 - low border
+   threat-low-text: #BFDBFE - low text
+   threat-low-glow: #60A5FA - low glow
+
+   accent-primary: #00D4FF - primary brand accent
+   accent-hover: #33DEFF - accent hover color
+   accent-muted: #00D4FF1A - low-opacity accent fill
+   accent-border: #00D4FF4D - accent border color
+
+   text-primary: #E6EDF7 - primary text
+   text-secondary: #A9B6CC - secondary text
+   text-tertiary: #73819A - tertiary text
+   text-disabled: #4C586E - disabled text
+
+   status-success: #22C55E - success semantic
+   status-warning: #EAB308 - warning semantic
+   status-danger: #EF4444 - danger semantic
+   status-info: #38BDF8 - info semantic
+   status-online: #10B981 - online indicator
+   status-offline: #64748B - offline indicator
+
+   os-linux: #22C55E - Linux host color
+   os-windows: #3B82F6 - Windows host color
+   os-macos: #A855F7 - macOS host color
+   os-unknown: #6B7280 - unknown OS color
+
+   border-default: #FFFFFF0F - default border
+   border-elevated: #FFFFFF1F - elevated border
+   border-accent: #00D4FF4D - accent border
+   border-danger: #EF444466 - danger border
+   ═══════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root {
-  width: 100%;
-  height: 100%;
-  background: #0f1117;
+:root {
+  --color-bg-app: #0A0F17;
+  --color-bg-sidebar: #0E1522;
+  --color-bg-card: #121B2A;
+  --color-bg-card-hover: #162235;
+  --color-bg-elevated: #1A2740;
+  --color-bg-input: #0F1726;
+
+  --color-threat-critical: #EF4444;
+  --color-threat-critical-bg: #3A1114;
+  --color-threat-critical-border: #7F1D1D;
+  --color-threat-critical-text: #FECACA;
+  --color-threat-critical-glow: #F87171;
+
+  --color-threat-high: #F59E0B;
+  --color-threat-high-bg: #3B2A0A;
+  --color-threat-high-border: #7A5A12;
+  --color-threat-high-text: #FDE68A;
+  --color-threat-high-glow: #FBBF24;
+
+  --color-threat-medium: #F97316;
+  --color-threat-medium-bg: #3C1E0E;
+  --color-threat-medium-border: #7C3B13;
+  --color-threat-medium-text: #FDBA74;
+  --color-threat-medium-glow: #FB923C;
+
+  --color-threat-low: #3B82F6;
+  --color-threat-low-bg: #0E223F;
+  --color-threat-low-border: #1D4ED8;
+  --color-threat-low-text: #BFDBFE;
+  --color-threat-low-glow: #60A5FA;
+
+  --color-accent-primary: #00D4FF;
+  --color-accent-hover: #33DEFF;
+  --color-accent-muted: #00D4FF1A;
+  --color-accent-border: #00D4FF4D;
+
+  --color-text-primary: #E6EDF7;
+  --color-text-secondary: #A9B6CC;
+  --color-text-tertiary: #73819A;
+  --color-text-disabled: #4C586E;
+
+  --color-status-success: #22C55E;
+  --color-status-warning: #EAB308;
+  --color-status-danger: #EF4444;
+  --color-status-info: #38BDF8;
+  --color-status-online: #10B981;
+  --color-status-offline: #64748B;
+
+  --color-os-linux: #22C55E;
+  --color-os-windows: #3B82F6;
+  --color-os-macos: #A855F7;
+  --color-os-unknown: #6B7280;
+
+  --color-border-default: #FFFFFF0F;
+  --color-border-elevated: #FFFFFF1F;
+  --color-border-accent: #00D4FF4D;
+  --color-border-danger: #EF444466;
 }
 
-body {
-  margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  -webkit-font-smoothing: antialiased;
+@layer base {
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+  }
+
+  html {
+    color-scheme: dark;
+    background-color: var(--color-bg-app);
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-bg-app);
+    color: var(--color-text-primary);
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
 }
 
-/* Custom scrollbar for dark theme */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+*::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
 }
-::-webkit-scrollbar-track  { background: #111827; }
-::-webkit-scrollbar-thumb  { background: #374151; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-accent-primary);
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent-hover);
+}
+
+::selection {
+  background: var(--color-accent-primary);
+  color: #031018;
+}
+
+@keyframes pulse-critical {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.6), 0 0 24px rgba(239, 68, 68, 0.6);
+  }
+}
+
+@keyframes slide-in-top {
+  0% {
+    transform: translateY(-12px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes count-up {
+  0% {
+    transform: translateY(4px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes bar-rise {
+  0% {
+    height: 0;
+  }
+  100% {
+    height: 100%;
+  }
+}

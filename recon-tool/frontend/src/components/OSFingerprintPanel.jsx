@@ -6,81 +6,180 @@
  */
 import React from "react";
 
-const OS_ICONS = {
-  Windows:    "🪟",
-  Linux:      "🐧",
-  macOS:      "🍎",
-  "Cisco/BSD":"🔌",
-  unknown:    "❓",
+const OS_META = {
+  linux: {
+    emoji: "🐧",
+    className: "text-os-linux",
+  },
+  windows: {
+    emoji: "🪟",
+    className: "text-os-windows",
+  },
+  macos: {
+    emoji: "🍎",
+    className: "text-os-macos",
+  },
+  unknown: {
+    emoji: "❓",
+    className: "text-text-tertiary",
+  },
 };
 
-function getIcon(os) {
-  for (const key of Object.keys(OS_ICONS)) {
-    if (os && os.includes(key)) return OS_ICONS[key];
+function normalizeOs(osGuess) {
+  const value = String(osGuess || "").toLowerCase();
+  if (value.includes("linux")) return "linux";
+  if (value.includes("windows")) return "windows";
+  if (value.includes("mac")) return "macos";
+  return "unknown";
+}
+
+function toPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const scaled = numeric > 1 ? numeric : numeric * 100;
+  return Math.max(0, Math.min(100, Math.round(scaled)));
+}
+
+function confidenceGradient(percent) {
+  if (percent >= 80) return "bg-gradient-to-r from-status-success to-accent-primary";
+  if (percent >= 50) return "bg-gradient-to-r from-threat-high to-threat-medium";
+  return "bg-gradient-to-r from-threat-critical to-threat-high";
+}
+
+function parseSignal(signalKey, result) {
+  if (signalKey === "ttl") {
+    const explicit = result?.details?.ttl_signal;
+    if (explicit) return explicit;
+    const ttl = Number(result?.ttl);
+    if (!Number.isFinite(ttl)) return "No response";
+    if (ttl <= 64) return "Linux / macOS";
+    if (ttl <= 128) return "Windows";
+    return "Unknown";
   }
-  return OS_ICONS.unknown;
+
+  if (signalKey === "window") {
+    const explicit = result?.details?.window_signal;
+    if (explicit) return explicit;
+    const win = Number(result?.window_size);
+    if (!Number.isFinite(win)) return "No response";
+    if (win >= 64000) return "Linux / macOS";
+    if (win >= 8000 && win < 64000) return "Windows";
+    return "Unknown";
+  }
+
+  const xmas = String(result?.xmas_result || "");
+  if (!xmas) return "No response";
+  const lower = xmas.toLowerCase();
+  if (lower.includes("no response") || lower.includes("filtered")) return "No response";
+  if (lower.includes("rst") || lower.includes("closed")) return "Windows";
+  if (lower.includes("open")) return "Linux / macOS";
+  return xmas;
+}
+
+function interpretationClass(value) {
+  const lower = String(value || "").toLowerCase();
+  if (lower.includes("linux") && lower.includes("mac")) return "bg-os-linux/15 text-os-linux";
+  if (lower.includes("linux")) return "bg-os-linux/15 text-os-linux";
+  if (lower.includes("windows")) return "bg-os-windows/15 text-os-windows";
+  if (lower.includes("mac")) return "bg-os-macos/15 text-os-macos";
+  if (lower.includes("no response") || lower.includes("unknown")) {
+    return "border border-border-default bg-bg-elevated text-text-tertiary";
+  }
+  return "bg-accent-muted text-accent-primary";
+}
+
+function contributionClass(value) {
+  const lower = String(value || "").toLowerCase();
+  if (lower.includes("linux") || lower.includes("windows") || lower.includes("mac")) {
+    return "bg-accent-primary";
+  }
+  if (lower.includes("/") || lower.includes("possible")) return "bg-text-secondary";
+  return "bg-text-disabled";
 }
 
 function ConfidenceBar({ value }) {
-  const pct = Math.round((value || 0) * 100);
-  const color =
-    pct >= 70 ? "bg-green-500" :
-    pct >= 40 ? "bg-yellow-500" :
-    "bg-red-500";
+  const percent = toPercent(value);
 
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 bg-gray-700 rounded-full h-2">
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-xs text-text-secondary">Confidence</span>
+        <span className="font-mono text-xs text-text-tertiary">{percent}%</span>
+      </div>
+      <div className="h-2 w-full rounded-full bg-bg-elevated">
         <div
-          className={`h-2 rounded-full transition-all duration-500 ${color}`}
-          style={{ width: `${pct}%` }}
+          className={`h-full rounded-full animate-bar-rise transition-[width] duration-500 ${confidenceGradient(percent)}`}
+          style={{ width: `${percent}%` }}
         />
       </div>
-      <span className="text-xs text-gray-400 w-8 text-right">{pct}%</span>
     </div>
   );
 }
 
-function SignalRow({ label, value, mono = false }) {
+function SignalRow({ label, value, interpretation }) {
   return (
-    <div className="flex justify-between items-center py-1 border-b border-gray-800">
-      <span className="text-gray-500 text-xs">{label}</span>
-      <span className={`text-sm ${mono ? "font-mono text-cyan-300" : "text-gray-300"}`}>
-        {value ?? "—"}
+    <div className="flex items-center gap-3 rounded-md bg-bg-elevated p-2">
+      <span className="w-28 flex-shrink-0 text-xs text-text-secondary">{label}</span>
+      <span className="w-24 rounded-sm border border-border-default bg-bg-card px-2 py-0.5 text-center font-mono text-xs text-text-primary">
+        {value}
       </span>
+      <span className={`flex-shrink-0 rounded-sm px-2 py-0.5 text-xs ${interpretationClass(interpretation)}`}>
+        {interpretation}
+      </span>
+      <span className={`ml-auto h-2 w-2 rounded-full ${contributionClass(interpretation)}`} />
     </div>
   );
 }
 
 function HostCard({ result }) {
+  const osKey = normalizeOs(result.os_guess);
+  const osMeta = OS_META[osKey] || OS_META.unknown;
+  const hostLabel = result.hostname || result.ip || "unknown-host";
+  const confidence = toPercent(result.confidence);
+
+  const signals = [
+    {
+      label: "TTL Analysis",
+      value: result.ttl ?? "—",
+      interpretation: parseSignal("ttl", result),
+    },
+    {
+      label: "TCP Window Size",
+      value: result.window_size ?? "—",
+      interpretation: parseSignal("window", result),
+    },
+    {
+      label: "Xmas Scan Response",
+      value: result.xmas_result || "—",
+      interpretation: parseSignal("xmas", result),
+    },
+  ];
+
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-      <div className="flex items-start justify-between mb-3">
+    <div className="rounded-lg border border-border-default bg-bg-card p-4">
+      <div className="mb-4 flex items-center gap-3">
+        <span className="leading-none" style={{ fontSize: "24px" }}>{osMeta.emoji}</span>
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-xl">{getIcon(result.os_guess)}</span>
-            <span className="text-white font-semibold">{result.os_guess || "unknown"}</span>
-          </div>
-          <div className="text-gray-500 text-xs font-mono mt-0.5">{result.ip}</div>
+          <div className="font-mono text-sm font-semibold text-text-primary">{hostLabel}</div>
+          <div className="text-xs text-text-tertiary">OS Detection Result</div>
         </div>
-        <div className="text-right">
-          <div className="text-gray-500 text-xs mb-1">Confidence</div>
-          <div className="w-32">
-            <ConfidenceBar value={result.confidence} />
-          </div>
+        <div className="ml-auto text-right">
+          <div className={`text-lg font-bold ${osMeta.className}`}>{result.os_guess || "unknown"}</div>
+          <div className="text-sm text-text-tertiary">{confidence}% confidence</div>
         </div>
       </div>
 
-      <div className="space-y-0.5">
-        <SignalRow label="TTL"         value={result.ttl}          mono />
-        <SignalRow label="Window Size" value={result.window_size}  mono />
-        <SignalRow label="Xmas Probe"  value={result.xmas_result} />
-        {result.details && (
-          <>
-            <SignalRow label="TTL signal"    value={result.details.ttl_signal} />
-            <SignalRow label="Window signal" value={result.details.window_signal} />
-          </>
-        )}
+      <ConfidenceBar value={result.confidence} />
+
+      <div className="mt-4 flex flex-col gap-2">
+        {signals.map((signal) => (
+          <SignalRow
+            key={signal.label}
+            label={signal.label}
+            value={signal.value}
+            interpretation={signal.interpretation}
+          />
+        ))}
       </div>
     </div>
   );
@@ -91,21 +190,13 @@ export default function OSFingerprintPanel({ osResults = [], hosts = [] }) {
   const combined = osResults.length > 0 ? osResults : hosts.filter((h) => h.os_guess);
 
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-700 p-4">
-      <h2 className="text-white font-semibold text-sm tracking-wide uppercase mb-4">
-        OS Fingerprints
-      </h2>
-
+    <div className="flex flex-col gap-3 p-4">
       {combined.length === 0 ? (
-        <div className="text-gray-600 text-sm text-center py-8">
+        <div className="py-8 text-center text-sm text-text-tertiary">
           No OS data yet — run OS fingerprinting on a host
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {combined.map((r, i) => (
-            <HostCard key={r.ip || i} result={r} />
-          ))}
-        </div>
+        combined.map((r, i) => <HostCard key={r.ip || i} result={r} />)
       )}
     </div>
   );

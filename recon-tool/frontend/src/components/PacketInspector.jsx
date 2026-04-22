@@ -8,70 +8,89 @@
 import React, { useEffect, useRef, useState } from "react";
 
 const PROTO_COLOR = {
-  TCP:  "text-blue-400",
-  UDP:  "text-purple-400",
-  ARP:  "text-yellow-400",
-  ICMP: "text-orange-400",
-  HTTP: "text-green-400",
+  TCP: "text-accent-primary",
+  UDP: "text-threat-high",
+  ARP: "text-threat-medium",
+  ICMP: "text-os-macos",
 };
 
 const FLAG_COLOR = {
-  "SYN-FLOOD":     "bg-red-900 text-red-300",
-  "ARP-SPOOF":     "bg-orange-900 text-orange-300",
-  "ARP-REPLY":     "bg-yellow-900 text-yellow-300",
-  "ICMP-REDIRECT": "bg-pink-900 text-pink-300",
-  "FPU":           "bg-purple-900 text-purple-300",
-  "S":             "bg-blue-900 text-blue-300",
-  "SA":            "bg-green-900 text-green-300",
-  "R":             "bg-red-900 text-red-300",
-  "RA":            "bg-red-900 text-red-300",
-  "ERROR":         "bg-red-950 text-red-400",
+  SYN: "bg-accent-muted text-accent-primary",
+  ACK: "bg-status-success/15 text-status-success",
+  RST: "bg-threat-critical/15 text-threat-critical",
+  FIN: "bg-bg-elevated text-text-tertiary",
+  SA: "bg-status-success/15 text-status-success",
+  "SYN-FLOOD": "bg-accent-muted text-accent-primary",
+  "ARP-SPOOF": "bg-threat-medium-bg text-threat-medium",
+  "ARP-REPLY": "bg-threat-medium-bg text-threat-medium",
+  "ICMP-REDIRECT": "bg-os-macos/15 text-os-macos",
+  R: "bg-threat-critical/15 text-threat-critical",
+  RA: "bg-threat-critical/15 text-threat-critical",
+  S: "bg-accent-muted text-accent-primary",
+  "S-ACK": "bg-status-success/15 text-status-success",
 };
 
 function flagStyle(flags) {
-  if (!flags) return "bg-gray-800 text-gray-500";
-  return FLAG_COLOR[flags] || "bg-gray-800 text-gray-400";
+  if (!flags) return "bg-bg-elevated text-text-tertiary";
+  return FLAG_COLOR[flags] || "bg-bg-elevated text-text-tertiary";
 }
 
 function protoColor(proto) {
-  return PROTO_COLOR[proto?.toUpperCase()] || "text-gray-400";
+  return PROTO_COLOR[proto?.toUpperCase()] || "text-text-tertiary";
 }
 
 function PacketRow({ pkt, idx }) {
   const ts = pkt.timestamp
-    ? new Date(pkt.timestamp).toLocaleTimeString("en-US", { hour12: false, fractionalSecondDigits: 2 })
+    ? new Date(pkt.timestamp).toLocaleTimeString("en-US", {
+        hour12: false,
+        fractionalSecondDigits: 2,
+      })
     : "";
 
+  const proto = String(pkt.protocol || "").toUpperCase();
+  const flags = String(pkt.flags || "").toUpperCase().split(/[\s,|]+/).filter(Boolean).slice(0, 3);
+
   return (
-    <div className={`flex items-start gap-2 px-3 py-1.5 border-b border-gray-800 hover:bg-gray-800/50
-                     text-xs font-mono transition-colors ${idx === 0 ? "bg-gray-800/30" : ""}`}>
+    <div
+      className={`flex items-start gap-2 border-b border-border-default/50 px-3 py-1.5 text-xs transition-colors hover:bg-white/[0.02] ${
+        idx === 0 ? "bg-bg-elevated/40" : ""
+      }`}
+    >
       {/* Timestamp */}
-      <span className="text-gray-600 w-24 flex-shrink-0">{ts}</span>
+      <span className="w-16 flex-shrink-0 font-mono text-xs text-text-tertiary">{ts}</span>
 
       {/* Protocol */}
-      <span className={`w-10 flex-shrink-0 font-bold ${protoColor(pkt.protocol)}`}>
-        {pkt.protocol || "???"}
+      <span className={`w-8 flex-shrink-0 font-mono text-xs font-bold ${protoColor(proto)}`}>
+        {proto || "?"}
       </span>
 
       {/* Flags badge */}
-      <span className={`px-1.5 py-0.5 rounded text-[10px] flex-shrink-0 ${flagStyle(pkt.flags)}`}>
-        {pkt.flags || "—"}
-      </span>
+      <div className="w-12 flex-shrink-0">
+        <div className="flex flex-wrap gap-1">
+          {flags.length === 0 ? (
+            <span className="rounded-sm bg-bg-elevated px-1 text-xs text-text-tertiary">—</span>
+          ) : (
+            flags.map((flag) => (
+              <span key={`${pkt.timestamp || idx}-${flag}`} className={`rounded-sm px-1 text-xs ${flagStyle(flag)}`}>
+                {flag}
+              </span>
+            ))
+          )}
+        </div>
+      </div>
 
       {/* TTL */}
-      <span className="text-gray-600 w-10 flex-shrink-0">
-        {pkt.ttl ? `ttl=${pkt.ttl}` : ""}
-      </span>
+      <span className="w-10 flex-shrink-0 font-mono text-xs text-text-tertiary">{pkt.ttl ?? ""}</span>
 
       {/* src → dst */}
-      <span className="text-gray-500 flex-shrink-0">
-        <span className="text-cyan-500">{pkt.src_ip || "?"}</span>
-        <span className="text-gray-600"> → </span>
-        <span className="text-indigo-400">{pkt.dst_ip || "?"}</span>
+      <span className="w-48 flex-shrink-0 truncate font-mono text-xs">
+        <span className="text-accent-primary">{pkt.src_ip || "?"}</span>
+        <span className="mx-1 text-text-tertiary">→</span>
+        <span className="text-os-macos">{pkt.dst_ip || "?"}</span>
       </span>
 
       {/* Summary */}
-      <span className="text-gray-400 flex-1 truncate ml-1">
+      <span className="ml-1 flex-1 truncate text-xs text-text-tertiary">
         {pkt.summary || pkt.message || ""}
       </span>
     </div>
@@ -80,16 +99,24 @@ function PacketRow({ pkt, idx }) {
 
 export default function PacketInspector({ packets = [], pps = 0, wsStatus = "disconnected" }) {
   const bottomRef = useRef(null);
-  const [paused,   setPaused]   = useState(false);
-  const [filter,   setFilter]   = useState("");
+  const [paused, setPaused] = useState(false);
+  const [filter, setFilter] = useState("");
   const [maxLines, setMaxLines] = useState(200);
+  const [isAutoScrolling, setIsAutoScrolling] = useState(true);
 
   // Auto-scroll to bottom when new packets arrive (if not paused)
   useEffect(() => {
     if (!paused && bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: "smooth" });
+      setIsAutoScrolling(true);
     }
   }, [packets, paused]);
+
+  function onScroll(event) {
+    const element = event.currentTarget;
+    const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 4;
+    setIsAutoScrolling(nearBottom);
+  }
 
   const filtered = packets
     .filter((p) => {
@@ -99,70 +126,68 @@ export default function PacketInspector({ packets = [], pps = 0, wsStatus = "dis
     })
     .slice(0, maxLines);
 
-  const statusColor = {
-    connected:    "bg-green-500",
-    connecting:   "bg-yellow-500",
-    disconnected: "bg-gray-500",
-    error:        "bg-red-500",
-  }[wsStatus] || "bg-gray-500";
-
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-700 flex flex-col" style={{ height: 480 }}>
+    <div className="relative flex h-full min-h-0 flex-col rounded-lg border border-border-default bg-bg-app font-mono">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-700 flex-shrink-0">
-        <h2 className="text-white font-semibold text-sm tracking-wide uppercase flex-1">
+      <div className="flex flex-shrink-0 items-center gap-3 border-b border-border-default px-3 py-2">
+        <h2 className="text-xs font-semibold tracking-widest text-text-tertiary">
           Packet Inspector
         </h2>
 
-        {/* WS status */}
-        <div className="flex items-center gap-1.5">
-          <span className={`w-2 h-2 rounded-full ${statusColor} ${wsStatus === "connected" ? "animate-pulse" : ""}`} />
-          <span className="text-gray-500 text-xs">{wsStatus}</span>
-        </div>
-
         {/* PPS counter */}
-        <div className="text-xs text-gray-500">
-          <span className="text-green-400 font-mono">{pps}</span> pkt/s
+        <div className="flex items-end gap-1">
+          <span className="font-mono text-xl font-bold leading-none text-accent-primary">{pps}</span>
+          <span className="text-xs text-text-tertiary">pkt/s</span>
         </div>
 
         {/* Filter input */}
-        <input
-          type="text"
-          placeholder="filter…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300
-                     placeholder-gray-600 focus:outline-none focus:border-cyan-500 w-32"
-        />
+        <div className="relative mx-auto w-full max-w-sm">
+          <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-tertiary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+          </span>
+          <input
+            type="text"
+            placeholder="Filter packets..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="w-full rounded-md border border-border-default bg-bg-input px-3 py-1.5 pl-8 text-sm text-text-primary placeholder:text-text-tertiary outline-none transition-colors duration-150 focus:border-accent-border"
+          />
+        </div>
 
         {/* Pause toggle */}
         <button
           onClick={() => setPaused((p) => !p)}
-          className={`px-2 py-1 rounded text-xs font-medium transition-colors
-            ${paused
-              ? "bg-green-700 text-green-200 hover:bg-green-600"
-              : "bg-gray-700 text-gray-300 hover:bg-gray-600"}`}
+          className="rounded-md border border-border-default bg-bg-elevated px-3 py-1.5 text-sm text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
         >
           {paused ? "▶ Resume" : "⏸ Pause"}
         </button>
 
-        {/* Total count */}
-        <span className="text-gray-600 text-xs">{packets.length} events</span>
+        <button
+          type="button"
+          onClick={() => setFilter("")}
+          className="text-sm text-text-tertiary transition-colors duration-150 hover:text-status-danger"
+        >
+          Clear
+        </button>
       </div>
 
       {/* Column headers */}
-      <div className="flex gap-2 px-3 py-1 bg-gray-800/50 border-b border-gray-800 text-[10px] text-gray-600 font-mono flex-shrink-0">
-        <span className="w-24">Time</span>
-        <span className="w-10">Proto</span>
-        <span className="w-16">Flags</span>
+      <div className="flex flex-shrink-0 gap-2 border-b border-border-default bg-bg-elevated/50 px-3 py-1.5 text-xs uppercase text-text-tertiary">
+        <span className="w-16">Time</span>
+        <span className="w-8">Proto</span>
+        <span className="w-12">Flags</span>
         <span className="w-10">TTL</span>
-        <span className="flex-1">src → dst → summary</span>
+        <span className="w-48">Route</span>
+        <span className="flex-1">Summary</span>
       </div>
 
       {/* Packet rows */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" onScroll={onScroll}>
         {filtered.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-gray-600 text-sm">
+          <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
             {packets.length === 0
               ? "Waiting for packets…"
               : `No packets match "${filter}"`}
@@ -175,6 +200,14 @@ export default function PacketInspector({ packets = [], pps = 0, wsStatus = "dis
             <div ref={bottomRef} />
           </>
         )}
+      </div>
+
+      <div
+        className={`pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-accent-muted px-3 py-1 text-xs text-accent-primary transition-opacity duration-150 ${
+          !paused && isAutoScrolling ? "opacity-100" : "opacity-0"
+        }`}
+      >
+        ↓ Auto-scrolling
       </div>
     </div>
   );

@@ -8,54 +8,59 @@
 import React, { useState } from "react";
 
 const STATUS_STYLE = {
-  open:           "bg-green-500 border-green-400 text-white",
-  closed:         "bg-red-900  border-red-700   text-red-300",
-  filtered:       "bg-yellow-800 border-yellow-600 text-yellow-200",
-  "open|filtered":"bg-gray-600 border-gray-500  text-gray-300",
+  open: "bg-threat-low/20 border-threat-low/40 text-threat-low",
+  closed: "bg-threat-critical/15 border-threat-critical/30 text-threat-critical",
+  filtered: "bg-threat-high/20 border-threat-high/40 text-threat-high",
+  "open|filtered": "bg-bg-elevated border-border-default text-text-tertiary",
 };
 
-const STATUS_DOT = {
-  open:           "bg-green-400",
-  closed:         "bg-red-500",
-  filtered:       "bg-yellow-400",
-  "open|filtered":"bg-gray-400",
+const OS_DOT = {
+  linux: "bg-os-linux",
+  windows: "bg-os-windows",
+  macos: "bg-os-macos",
+  unknown: "bg-os-unknown",
 };
 
-function PortCell({ result }) {
+function normalizeOsName(value) {
+  const name = String(value || "unknown");
+  const lower = name.toLowerCase();
+  if (lower.includes("linux")) return "linux";
+  if (lower.includes("windows")) return "windows";
+  if (lower.includes("mac")) return "macos";
+  return "unknown";
+}
+
+function PortCell({ result, index }) {
   const [showTip, setShowTip] = useState(false);
   const style = STATUS_STYLE[result.status] || STATUS_STYLE.filtered;
   const protocol = typeof result.protocol === "string" && result.protocol
     ? result.protocol
     : "unknown";
+  const service = result.service || "n/a";
+  const banner = result.banner ? String(result.banner).slice(0, 60) : "n/a";
+
+  const tooltip = `Port: ${result.port}\nProtocol: ${protocol.toUpperCase()}\nService: ${service}\nBanner: ${banner}`;
 
   return (
     <div
-      className={`relative border rounded px-1.5 py-1 text-center text-xs font-mono cursor-default select-none ${style}`}
-      style={{ minWidth: 52 }}
+      className={`relative flex items-center justify-center rounded-sm border font-mono text-xs font-medium text-center cursor-default select-none animate-fade-in ${style}`}
+      style={{ width: "56px", height: "28px", animationDelay: `${index * 20}ms` }}
       onMouseEnter={() => setShowTip(true)}
       onMouseLeave={() => setShowTip(false)}
+      title={tooltip}
     >
-      <div className="font-bold">{result.port}</div>
-      <div className="text-[9px] opacity-75 uppercase">{protocol}</div>
+      {result.port}
 
       {showTip && (
-        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-64
-                        bg-gray-900 border border-gray-600 rounded shadow-xl p-2 text-left">
-          <div className="text-green-400 font-semibold mb-1">
+        <div className="absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-md border border-border-elevated bg-bg-elevated p-2 text-left shadow-card">
+          <div className="mb-1 font-semibold text-accent-primary">
             Port {result.port}/{protocol.toUpperCase()}
           </div>
-          <div className="flex gap-2 mb-1">
-            <span className={`w-2 h-2 mt-0.5 rounded-full flex-shrink-0 ${STATUS_DOT[result.status]}`} />
-            <span className="text-gray-300 text-xs capitalize">{result.status}</span>
+          <div className="mb-1 flex gap-2">
+            <span className="text-xs capitalize text-text-secondary">{result.status}</span>
           </div>
-          {result.banner && (
-            <div className="mt-1 pt-1 border-t border-gray-700">
-              <div className="text-gray-500 text-[9px] uppercase mb-0.5">Banner</div>
-              <div className="text-cyan-300 text-[10px] font-mono break-all">
-                {result.banner}
-              </div>
-            </div>
-          )}
+          <div className="font-mono text-xs text-text-tertiary">Service: {service}</div>
+          <div className="mt-1 font-mono text-xs text-text-tertiary">Banner: {banner}</div>
         </div>
       )}
     </div>
@@ -75,40 +80,52 @@ export default function PortMatrix({ portResults = [] }) {
   const filteredCount = portResults.filter((r) => r.status === "filtered").length;
 
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-700 p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-white font-semibold text-sm tracking-wide uppercase">Port Matrix</h2>
-        <div className="flex gap-4 text-xs">
-          <span className="flex items-center gap-1.5 text-green-400">
-            <span className="w-2 h-2 rounded-full bg-green-400" /> {openCount} open
-          </span>
-          <span className="flex items-center gap-1.5 text-yellow-400">
-            <span className="w-2 h-2 rounded-full bg-yellow-400" /> {filteredCount} filtered
-          </span>
-        </div>
-      </div>
-
+    <div className="flex flex-col gap-4 p-4">
       {Object.keys(byHost).length === 0 ? (
-        <div className="text-gray-600 text-sm text-center py-8">
+        <div className="py-8 text-center text-sm text-text-tertiary">
           No port results yet — run a port scan
         </div>
       ) : (
         Object.entries(byHost).map(([ip, results]) => (
-          <div key={ip} className="mb-6">
-            <div className="text-cyan-400 font-mono text-sm mb-2 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" />
-              {ip}
-              <span className="text-gray-500 text-xs">({results.length} ports scanned)</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {results
-                .sort((a, b) => a.port - b.port)
-                .map((r, i) => (
-                  <PortCell key={`${r.port}-${r.protocol}-${i}`} result={r} />
-                ))}
-            </div>
+          <div key={ip}>
+            {(() => {
+              const open = results.filter((r) => r.status === "open").length;
+              const closed = results.filter((r) => r.status === "closed").length;
+              const filtered = results.filter((r) => r.status === "filtered" || r.status === "open|filtered").length;
+              const first = results[0] || {};
+              const osName = first.os || first.os_guess || "unknown";
+              const osClass = OS_DOT[normalizeOsName(osName)] || OS_DOT.unknown;
+
+              return (
+                <>
+                  <div className="flex items-center">
+                    <span className={`h-1.5 w-1.5 rounded-full ${osClass}`} />
+                    <span className="ml-2 font-mono text-sm font-semibold text-text-primary">{ip}</span>
+                    <span className="ml-2 text-xs text-text-tertiary">{osName}</span>
+                    <span className="ml-auto text-xs text-text-tertiary">{open} open · {closed} closed · {filtered} filtered</span>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {results
+                      .sort((a, b) => a.port - b.port)
+                      .map((r, i) => (
+                        <PortCell key={`${r.port}-${r.protocol}-${i}`} result={r} index={i} />
+                      ))}
+                  </div>
+
+                  <div className="mt-2 text-xs text-text-tertiary">
+                    Scanned {results.length} ports — {open} open, {closed} closed, {filtered} filtered
+                  </div>
+                </>
+              );
+            })()}
           </div>
         ))
+      )}
+      {(openCount > 0 || filteredCount > 0) && (
+        <div className="text-xs text-text-tertiary">
+          Total observed — {openCount} open, {filteredCount} filtered
+        </div>
       )}
     </div>
   );
