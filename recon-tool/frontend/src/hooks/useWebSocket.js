@@ -44,7 +44,15 @@ export function useWebSocket(sessionId) {
     ws.onopen = () => setStatus("connected");
 
     ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
+      let data;
+      try {
+        data = JSON.parse(e.data);
+      } catch {
+        // Ignore malformed frames so one bad message cannot crash the app.
+        return;
+      }
+
+      if (!data || typeof data !== "object") return;
       pktCountRef.current += 1;
 
       switch (data.event_type) {

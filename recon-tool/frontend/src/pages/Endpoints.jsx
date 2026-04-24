@@ -55,8 +55,8 @@ export default function Endpoints() {
 
       return {
         agent_id: reg.agent_id || inv.agent_id || inv.hostname || "unknown",
-        hostname: reg.hostname || inv.hostname || "—",
-        ip: reg.ip || (inv.ips || [])[0] || "—",
+        hostname: reg.hostname || inv.hostname || "ï¿½",
+        ip: reg.ip || (inv.ips || [])[0] || "ï¿½",
         os: reg.os_name || inv.os_name || "unknown",
         os_version: inv.os_version || "",
         last_seen: lastSeen,
@@ -76,8 +76,8 @@ export default function Endpoints() {
   const active = merged.filter((m) => m.online).length;
   const disconnected = merged.length - active;
   const statusUi = statusClass(status);
-  const registeredOnly = merged.filter((row) => row.hostname !== "—" && !row.last_seen).length;
-  const inventoryOnly = merged.filter((row) => row.hostname === "—" && row.last_seen).length;
+  const registeredOnly = merged.filter((row) => row.hostname !== "ï¿½" && !row.last_seen).length;
+  const inventoryOnly = merged.filter((row) => row.hostname === "ï¿½" && row.last_seen).length;
 
   return (
     <div className="flex flex-col gap-4">
@@ -189,7 +189,7 @@ export default function Endpoints() {
                     {row.os_version ? ` ${row.os_version}` : ""}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-text-tertiary">
-                    {row.last_seen ? row.last_seen.toLocaleTimeString() : "—"}
+                    {row.last_seen ? row.last_seen.toLocaleTimeString() : "ï¿½"}
                   </td>
                   <td className="px-4 py-2">
                     <span

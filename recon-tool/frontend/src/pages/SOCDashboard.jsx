@@ -1,3 +1,8 @@
+/**
+ * SOCDashboard.jsx
+ * Live Security Operations Center dashboard with real-time alerts,
+ * metrics, and endpoint status.
+ */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useInventory } from "../hooks/useInventory";
@@ -145,37 +150,19 @@ function AlertRow({ alert, isNewest }) {
   const style = SEVERITY_STYLE[alert.severity] || SEVERITY_STYLE.low;
   return (
     <div
-      className={`group flex items-stretch gap-3 border-b border-border-default px-3 py-3 transition-colors duration-150 hover:bg-bg-card-hover ${
-        isNewest ? "animate-slide-in-top" : ""
-      }`}
+      className={`group flex items-stretch gap-3 border-b border-border-default px-3 py-3 transition-colors duration-150 hover:bg-bg-card-hover ${isNewest ? "animate-slide-in-top" : ""}`}
     >
       <div className={`${style.bar} rounded-full`} style={{ width: "3px" }} />
-
       <div className={`mt-1 h-2 w-2 rounded-full ${style.dot}`} />
-
       <div className="flex-1 overflow-hidden">
-        <p
-          className="font-semibold text-text-primary"
-          style={{
-            fontSize: "12px",
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical",
-            overflow: "hidden",
-          }}
-        >
+        <p className="font-semibold text-text-primary" style={{ fontSize: "12px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
           {alert.message}
         </p>
         <p className="mt-1 text-sm text-text-tertiary">src: {alert.src_ip}</p>
         <p className="text-sm text-text-tertiary">rule: {alert.type}</p>
       </div>
-
       <div className="ml-2 flex flex-col items-end gap-1">
-        <span
-          className={`rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText} ${
-            style.pulse ? "animate-pulse-critical" : ""
-          }`}
-        >
+        <span className={`rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText} ${style.pulse ? "animate-pulse-critical" : ""}`}>
           {alert.severity.toUpperCase()}
         </span>
         <span className="font-mono text-xs text-text-tertiary">{formatTime(alert.timestamp)}</span>
@@ -210,6 +197,17 @@ export default function SOCDashboard() {
   const prevMetricRef = useRef({ syn: null, arp: null, alerts: null, agents: null });
   const flashTimersRef = useRef([]);
 
+  // Live alerts from WebSocket
+  const liveAlerts = useMemo(() => {
+    return (ws?.alerts || []).map((entry) => normalizeAlert(entry)).slice(0, MAX_ALERTS);
+  }, [ws?.alerts]);
+
+  // Final alerts value (real-time or demo)
+  const alerts = useMemo(() => {
+    return isWsConnected ? liveAlerts : simAlerts;
+  }, [isWsConnected, liveAlerts, simAlerts]);
+
+  // Live agents (merged from registry + inventory)
   const liveAgents = useMemo(() => {
     const map = new Map();
 
@@ -270,6 +268,7 @@ export default function SOCDashboard() {
       .join(" · ");
   }, [onlineAgents]);
 
+  // Hot targets (most attacked IPs)
   const hotTargets = useMemo(() => {
     const map = new Map();
     alerts.forEach((alert) => {
@@ -288,12 +287,6 @@ export default function SOCDashboard() {
       .slice(0, 5);
   }, [alerts]);
 
-  const liveAlerts = useMemo(() => {
-    return (ws.alerts || []).map((entry) => normalizeAlert(entry)).slice(0, MAX_ALERTS);
-  }, [ws.alerts]);
-
-  const alerts = isWsConnected ? liveAlerts : simAlerts;
-
   const arpAnomalies = useMemo(() => {
     return alerts.filter((item) => String(item.type).toLowerCase().includes("arp")).length;
   }, [alerts]);
@@ -303,6 +296,7 @@ export default function SOCDashboard() {
     return alerts.filter((item) => parseTimestamp(item.timestamp) >= limit).length;
   }, [alerts]);
 
+  // Update newest alert key for animation
   useEffect(() => {
     if (!alerts.length) return;
     const top = alerts[0];
@@ -313,6 +307,7 @@ export default function SOCDashboard() {
     }
   }, [alerts]);
 
+  // Sync SYN rate from WebSocket
   useEffect(() => {
     if (!isWsConnected) return;
     const next = Math.max(0, Number(ws.pps) || 0);
@@ -321,10 +316,9 @@ export default function SOCDashboard() {
     setPktsSent((prev) => prev + next);
   }, [isWsConnected, ws.pps]);
 
+  // Demo mode when WebSocket is not connected
   useEffect(() => {
-    if (isWsConnected) return undefined;
-
-    console.log("[DEMO MODE] WebSocket not connected");
+    if (isWsConnected) return;
 
     const metricsTimer = setInterval(() => {
       const next = 400 + Math.floor(Math.random() * 600);
@@ -344,6 +338,7 @@ export default function SOCDashboard() {
     };
   }, [isWsConnected]);
 
+  // Flash animation on metric changes
   useEffect(() => {
     const current = {
       syn: synPps,
