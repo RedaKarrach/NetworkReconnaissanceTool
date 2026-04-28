@@ -5,8 +5,9 @@ Two standalone Python scripts — no Docker needed, run directly on the VMs.
 | File | VM | Role |
 |------|----|------|
 | `victim_agent.py` | Windows 10 VM (192.168.56.20) | Sniffs traffic, detects attacks, POSTs alerts to dashboard |
+| `ubuntu_victim_agent.py` | Ubuntu "server" VM (192.168.56.30) | Sniffs traffic, detects attacks, POSTs alerts to dashboard |
 | `attacker.py`     | Kali Linux VM (192.168.56.10) | Launches SYN flood / ARP spoof / ICMP redirect |
-| `inventory_agent.py` | Windows / Kali VM | Sends Wazuh-like host inventory to dashboard |
+| `inventory_agent.py` | Windows / Kali / Ubuntu VM | Sends Wazuh-like host inventory to dashboard |
 
 ## Quick install
 
@@ -21,6 +22,11 @@ pip install scapy requests psutil
 ## Run victim_agent.py (Windows, as Administrator)
 ```
 python victim_agent.py
+```
+
+## Run ubuntu_victim_agent.py (Ubuntu, as root)
+```
+sudo python ubuntu_victim_agent.py
 ```
 
 ## Run attacker.py (Kali, as root)
@@ -41,6 +47,7 @@ python inventory_agent.py
 On Linux:
 ```bash
 export DASHBOARD_URL=http://192.168.56.1:8000/api/agents/inventory/
+export AGENT_ID=ubuntu-server
 export AGENT_TOKEN=change-me
 python inventory_agent.py
 ```

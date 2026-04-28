@@ -9,7 +9,7 @@ Usage:
 
 Config via env:
   DASHBOARD_URL=http://192.168.56.1:8000/api/agents/inventory/
-  AGENT_ID=win-victim
+  AGENT_ID=ubuntu-server
   AGENT_TOKEN=change-me
   INTERVAL=60
 """
@@ -32,6 +32,44 @@ DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://192.168.56.1:8000/api/ag
 AGENT_ID = os.environ.get("AGENT_ID")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 INTERVAL = int(os.environ.get("INTERVAL", "60"))
+
+
+def get_default_agent_id():
+  if os.name == "nt":
+    return platform.node() or socket.gethostname() or "windows-host"
+  return "ubuntu server"
+
+
+def get_display_name(agent_id):
+  if os.name == "nt":
+    return str(agent_id or get_hostname()).strip() or "Windows Host"
+
+  value = str(agent_id or "ubuntu server").replace("-", " ").strip()
+  return value.title() if value else "Ubuntu Server"
+
+
+def get_linux_os_info():
+  name = "Linux"
+  version = platform.version()
+
+  try:
+    os_release = {}
+    if hasattr(platform, "freedesktop_os_release"):
+      os_release = platform.freedesktop_os_release()
+    else:
+      with open("/etc/os-release", "r", encoding="utf-8") as handle:
+        for line in handle:
+          if "=" not in line:
+            continue
+          key, raw_value = line.rstrip().split("=", 1)
+          os_release[key] = raw_value.strip().strip('"')
+
+    name = os_release.get("PRETTY_NAME") or os_release.get("NAME") or name
+    version = os_release.get("VERSION") or os_release.get("VERSION_ID") or version
+  except Exception:
+    pass
+
+  return name, version
 
 
 def run_cmd(cmd):
@@ -165,16 +203,23 @@ def get_services():
 
 
 def build_payload():
-  hostname = get_hostname()
+  agent_id = AGENT_ID or get_default_agent_id()
+  hostname = get_display_name(agent_id)
   interfaces, ips, macs = get_interfaces()
   cpu_model, cpu_cores = get_cpu_info()
   disk_total_gb, disk_free_gb = get_disk_gb()
 
+  if os.name == "nt":
+    os_name = platform.system()
+    os_version = platform.version()
+  else:
+    os_name, os_version = get_linux_os_info()
+
   return {
-    "agent_id": AGENT_ID or hostname,
+    "agent_id": agent_id,
     "hostname": hostname,
-    "os_name": platform.system(),
-    "os_version": platform.version(),
+    "os_name": os_name,
+    "os_version": os_version,
     "kernel": platform.release(),
     "arch": platform.machine(),
     "domain": get_domain(),
@@ -207,7 +252,7 @@ def main():
   print("=" * 60)
   print("  Inventory Agent — Host Telemetry")
   print("=" * 60)
-  print(f"  Agent ID : {AGENT_ID or get_hostname()}")
+  print(f"  Agent ID : {AGENT_ID or get_default_agent_id()}")
   print(f"  Dashboard: {DASHBOARD_URL}")
   print(f"  Interval : {INTERVAL}s")
   print("=" * 60)

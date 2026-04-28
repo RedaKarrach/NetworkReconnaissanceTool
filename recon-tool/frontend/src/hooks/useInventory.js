@@ -1,11 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ADMIN_TOKEN, API_BASE, WS_BASE } from "../lib/runtimeConfig";
 
-const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
-const WS_BASE = process.env.REACT_APP_WS_URL || "ws://localhost:8000";
+function normalizeTimestamp(value) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  // Backend emits UTC without timezone suffix (e.g. 2026-04-27T12:00:00.123456).
+  // JS treats that as local time, causing false "disconnected" states.
+  if (/[zZ]$/.test(trimmed) || /[+-]\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+  return `${trimmed}Z`;
+}
+
+function normalizeInventoryItem(item) {
+  if (!item || typeof item !== "object") return item;
+  return {
+    ...item,
+    last_seen: normalizeTimestamp(item.last_seen),
+  };
+}
 
 function upsertByAgent(items, incoming) {
+  const normalizedIncoming = normalizeInventoryItem(incoming);
   const map = new Map(items.map((i) => [i.agent_id, i]));
-  map.set(incoming.agent_id, { ...map.get(incoming.agent_id), ...incoming });
+  map.set(normalizedIncoming.agent_id, { ...map.get(normalizedIncoming.agent_id), ...normalizedIncoming });
   return Array.from(map.values());
 }
 
@@ -21,11 +38,36 @@ export function useInventory() {
       const res = await fetch(`${API_BASE}/api/agents/inventory/latest/?limit=100`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setItems(data.items || []);
+      setItems((data.items || []).map(normalizeInventoryItem));
+      setStatus("connected");
     } catch (e) {
       setError(e.message);
+      setStatus("error");
     }
   }, []);
+
+  const deleteInventoryItem = useCallback(async (payload) => {
+    try {
+      setError(null);
+      const res = await fetch(`${API_BASE}/api/agents/inventory/`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          ...(ADMIN_TOKEN ? { "X-AGENT-TOKEN": ADMIN_TOKEN } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      await refresh();
+      return true;
+    } catch (e) {
+      setError(e.message);
+      return false;
+    }
+  }, [refresh]);
 
   useEffect(() => {
     refresh();
@@ -44,7 +86,7 @@ export function useInventory() {
       try {
         const data = JSON.parse(e.data);
         if (data.event_type === "inventory" && data.agent_id) {
-          setItems((prev) => upsertByAgent(prev, data));
+          setItems((prev) => upsertByAgent(prev, normalizeInventoryItem(data)));
         }
       } catch {
         // ignore malformed payloads
@@ -62,5 +104,5 @@ export function useInventory() {
     });
   }, [items]);
 
-  return { items: sorted, status, error, refresh };
+  return { items: sorted, status, error, refresh, deleteInventoryItem };
 }

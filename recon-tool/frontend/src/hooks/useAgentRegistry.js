@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-
-const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
+import { API_BASE } from "../lib/runtimeConfig";
 
 export function useAgentRegistry() {
   const [items, setItems] = useState([]);
@@ -60,6 +59,8 @@ export function useAgentRegistry() {
 
   useEffect(() => {
     refresh();
+    const timer = setInterval(refresh, 10000);
+    return () => clearInterval(timer);
   }, [refresh]);
 
   return { items, error, refresh, addAgent, deleteAgent };

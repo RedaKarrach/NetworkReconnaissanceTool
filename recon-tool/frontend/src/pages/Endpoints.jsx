@@ -2,6 +2,8 @@ import React, { useMemo, useState } from "react";
 import { useInventory } from "../hooks/useInventory";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
 
+const ONLINE_WINDOW_MS = 300000;
+
 function pct(n, d) {
   if (!d) return "0%";
   return `${Math.round((n / d) * 100)}%`;
@@ -20,10 +22,10 @@ function donutStyle(active, total) {
 
 function osMeta(osName) {
   const os = String(osName || "unknown").toLowerCase();
-  if (os.includes("linux")) return { emoji: "??", className: "text-os-linux" };
-  if (os.includes("windows")) return { emoji: "??", className: "text-os-windows" };
-  if (os.includes("mac")) return { emoji: "??", className: "text-os-macos" };
-  return { emoji: "?", className: "text-text-tertiary" };
+  if (os.includes("linux")) return { emoji: "LNX", className: "text-os-linux" };
+  if (os.includes("windows")) return { emoji: "WIN", className: "text-os-windows" };
+  if (os.includes("mac")) return { emoji: "MAC", className: "text-os-macos" };
+  return { emoji: "UNK", className: "text-text-tertiary" };
 }
 
 function statusClass(status) {
@@ -51,12 +53,12 @@ export default function Endpoints() {
       const reg = entry.registry || {};
       const inv = entry.inventory || {};
       const lastSeen = inv.last_seen ? new Date(inv.last_seen) : null;
-      const online = lastSeen ? Date.now() - lastSeen.getTime() < 120000 : false;
+      const online = lastSeen ? Date.now() - lastSeen.getTime() < ONLINE_WINDOW_MS : false;
 
       return {
         agent_id: reg.agent_id || inv.agent_id || inv.hostname || "unknown",
-        hostname: reg.hostname || inv.hostname || "�",
-        ip: reg.ip || (inv.ips || [])[0] || "�",
+        hostname: reg.hostname || inv.hostname || "--",
+        ip: reg.ip || (inv.ips || [])[0] || "--",
         os: reg.os_name || inv.os_name || "unknown",
         os_version: inv.os_version || "",
         last_seen: lastSeen,
@@ -76,11 +78,11 @@ export default function Endpoints() {
   const active = merged.filter((m) => m.online).length;
   const disconnected = merged.length - active;
   const statusUi = statusClass(status);
-  const registeredOnly = merged.filter((row) => row.hostname !== "�" && !row.last_seen).length;
-  const inventoryOnly = merged.filter((row) => row.hostname === "�" && row.last_seen).length;
+  const registeredOnly = merged.filter((row) => row.hostname !== "--" && !row.last_seen).length;
+  const inventoryOnly = merged.filter((row) => row.hostname === "--" && row.last_seen).length;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <p className="text-xs uppercase tracking-widest text-text-tertiary">Endpoints</p>
@@ -95,13 +97,13 @@ export default function Endpoints() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search by agent, host, IP or OS"
-            className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-border focus:outline-none"
+            className="w-full rounded-lg border border-border-default bg-bg-input/70 px-3 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-border focus:outline-none"
           />
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="rounded-lg border border-border-default bg-bg-card p-4">
+        <div className="card-premium depth-rail p-4">
           <p className="text-xs uppercase tracking-widest text-text-tertiary">Live Presence</p>
           <div className="mt-4 flex items-center gap-5">
             <div className="relative" style={donutStyle(active, merged.length)}>
@@ -120,7 +122,7 @@ export default function Endpoints() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-border-default bg-bg-card p-4">
+        <div className="card-premium depth-rail p-4">
           <div className="mb-3 text-xs uppercase tracking-widest text-text-tertiary">Registry Sync</div>
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div>
@@ -142,7 +144,7 @@ export default function Endpoints() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-border-default bg-bg-card p-4">
+        <div className="card-premium depth-rail p-4">
           <div className="mb-3 text-xs uppercase tracking-widest text-text-tertiary">Coverage</div>
           <div className="h-24 rounded-md bg-bg-elevated p-2">
             <div className="flex h-full items-end gap-1">
@@ -161,14 +163,14 @@ export default function Endpoints() {
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-border-default bg-bg-card">
-        <div className="border-b border-border-default bg-bg-elevated px-4 py-2 text-xs uppercase tracking-widest text-text-tertiary">
+      <div className="panel-premium endpoint-table-shell overflow-hidden">
+        <div className="border-b border-border-default/60 bg-bg-elevated/80 px-4 py-2 text-xs uppercase tracking-widest text-text-tertiary">
           Agents ({filtered.length})
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
-              <tr className="border-b border-border-default/60 text-xs text-text-tertiary">
+                <tr className="border-b border-border-default/60 text-xs text-text-tertiary">
                 <th className="px-4 py-2 text-left">ID</th>
                 <th className="px-4 py-2 text-left">Name</th>
                 <th className="px-4 py-2 text-left">IP address</th>
@@ -179,7 +181,7 @@ export default function Endpoints() {
             </thead>
             <tbody>
               {filtered.map((row) => (
-                <tr key={row.agent_id} className="border-b border-border-default/50 hover:bg-bg-card-hover">
+                <tr key={row.agent_id} className="endpoint-row border-b border-border-default/50 hover:bg-bg-card-hover">
                   <td className="px-4 py-2 font-mono text-accent-primary">{row.agent_id}</td>
                   <td className="px-4 py-2 text-text-primary">{row.hostname}</td>
                   <td className="px-4 py-2 font-mono text-text-secondary">{row.ip}</td>
@@ -189,14 +191,14 @@ export default function Endpoints() {
                     {row.os_version ? ` ${row.os_version}` : ""}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-text-tertiary">
-                    {row.last_seen ? row.last_seen.toLocaleTimeString() : "�"}
+                    {row.last_seen ? row.last_seen.toLocaleTimeString() : "--"}
                   </td>
                   <td className="px-4 py-2">
                     <span
-                      className={`inline-flex items-center gap-2 rounded-sm px-2 py-0.5 text-xs ${
+                      className={`orbital-tag ${
                         row.online
-                          ? "bg-status-success/15 text-status-success"
-                          : "bg-bg-elevated text-text-tertiary"
+                          ? "border-status-success/30 bg-status-success/15 text-status-success"
+                          : "border-border-default bg-bg-elevated text-text-tertiary"
                       }`}
                     >
                       <span className={`h-2 w-2 rounded-full ${row.online ? "bg-status-success" : "bg-status-offline"}`} />

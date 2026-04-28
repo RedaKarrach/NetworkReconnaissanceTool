@@ -104,12 +104,10 @@ export default function PacketInspector({ packets = [], pps = 0, wsStatus = "dis
   const [maxLines, setMaxLines] = useState(200);
   const [isAutoScrolling, setIsAutoScrolling] = useState(true);
 
-  // Auto-scroll to bottom when new packets arrive (if not paused)
+  // Keep auto-scroll disabled to prevent page jump on load.
   useEffect(() => {
-    if (!paused && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: "smooth" });
-      setIsAutoScrolling(true);
-    }
+    if (paused) return;
+    setIsAutoScrolling(false);
   }, [packets, paused]);
 
   function onScroll(event) {

@@ -4,7 +4,7 @@
  * D3.js force-directed graph showing discovered hosts as nodes.
  * Color-coded by OS guess. Clicking a node selects it.
  */
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import * as d3 from "d3";
 
 const OS_COLORS = {
@@ -22,13 +22,33 @@ function getColor(os) {
   return OS_COLORS.unknown;
 }
 
-export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 }) {
+export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, selectedHostId = null }) {
   const svgRef = useRef(null);
   const tooltipRef = useRef(null);
   const zoomInRef = useRef(null);
   const zoomOutRef = useRef(null);
   const zoomResetRef = useRef(null);
-  const [selected, setSelected] = useState(null);
+  const positionRef = useRef(new Map());
+
+  useEffect(() => {
+    if (!svgRef.current) return;
+
+    const selectedId = selectedHostId || null;
+    const root = d3.select(svgRef.current);
+
+    root.selectAll("g[data-node-id]").each(function () {
+      const nodeGroup = d3.select(this);
+      const nodeId = nodeGroup.attr("data-node-id");
+      const isSelected = nodeId === selectedId;
+
+      nodeGroup.select("circle.node-ring")
+        .attr("opacity", isSelected ? 0.3 : 0)
+        .style("animation", "none");
+
+      nodeGroup.select("circle.node-core")
+        .attr("r", isSelected ? 24 : 20);
+    });
+  }, [selectedHostId]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -49,30 +69,43 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
     });
     svg.call(zoom);
 
-    // Build nodes: scanner at center + discovered hosts
-    const trimmedHosts = hosts.slice(0, maxHosts);
-    const nodes = [
-      { id: "scanner", label: "Scanner", os: "scanner", type: "scanner" },
-      ...trimmedHosts.map((h) => ({
-        id:    h.ip,
-        label: h.ip,
-        mac:   h.mac,
-        os:    h.os_guess || "unknown",
-        type:  "host",
-      })),
-    ];
+    // Build nodes from unique endpoint IPs only.
+    const uniqueHosts = [];
+    const seenIp = new Set();
+    hosts.forEach((host) => {
+      const ip = String(host?.ip || "").trim();
+      if (!ip || seenIp.has(ip)) return;
+      seenIp.add(ip);
+      uniqueHosts.push({ ...host, ip });
+    });
 
-    const links = trimmedHosts.map((h) => ({
-      source: "scanner",
-      target: h.ip,
-    }));
+    const trimmedHosts = uniqueHosts.slice(0, maxHosts);
+    const nodes = trimmedHosts.map((h) => {
+      const previous = positionRef.current.get(h.ip) || {};
+      return {
+        ...h,
+        id: h.ip,
+        label: h.hostname || h.ip,
+        mac: h.mac,
+        os: h.os_guess || h.os || "unknown",
+        type: "host",
+        x: previous.x,
+        y: previous.y,
+        vx: previous.vx,
+        vy: previous.vy,
+      };
+    });
+
+    const links = [];
 
     // Force simulation
     const simulation = d3.forceSimulation(nodes)
       .force("link",    d3.forceLink(links).id((d) => d.id).distance(120))
-      .force("charge",  d3.forceManyBody().strength(-300))
+      .force("charge",  d3.forceManyBody().strength(-160))
       .force("center",  d3.forceCenter(width / 2, height / 2))
-      .force("collide", d3.forceCollide(45));
+      .force("collide", d3.forceCollide(56))
+      .alphaDecay(0.26)
+      .velocityDecay(0.72);
 
     // Draw edges
     const link = g.append("g")
@@ -95,7 +128,6 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
         .on("end",   (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
       )
       .on("click", (e, d) => {
-        setSelected(d.id);
         if (onSelectHost) onSelectHost(d);
       })
       .on("mouseover", (e, d) => {
@@ -103,8 +135,9 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
 
         const openPorts = Array.isArray(d.open_ports) ? d.open_ports.length : (Number(d.open_ports) || 0);
         tooltipRef.current.innerHTML = `
-          <div class="font-mono text-sm font-bold text-text-primary">${d.label}</div>
+          <div class="font-mono text-sm font-bold text-text-primary">${d.ip || d.label}</div>
           <div class="mt-1 font-mono text-xs text-text-tertiary">${d.mac || "N/A"}</div>
+          <div class="mt-1 text-sm text-text-secondary">${d.hostname || "unknown-host"}</div>
           <div class="mt-1 text-sm text-text-secondary">${d.os || "unknown"}</div>
           <div class="text-sm text-text-tertiary">open ports: ${openPorts}</div>
         `;
@@ -121,17 +154,21 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
         tooltipRef.current.style.opacity = "0";
       });
 
+    node.attr("data-node-id", (d) => d.id);
+
     node.append("circle")
+      .attr("class", "node-ring")
       .attr("r", 32)
       .attr("fill", "none")
       .attr("stroke", (d) => (d.type === "scanner" ? "var(--color-accent-primary)" : getColor(d.os)))
       .attr("stroke-width", 1.5)
-      .attr("opacity", (d) => (d.id === selected ? 0.3 : 0))
-      .style("animation", (d) => (d.id === selected ? "pulse-critical 2s ease-in-out infinite" : "none"));
+      .attr("opacity", (d) => (d.id === selectedHostId ? 0.3 : 0))
+      .style("animation", "none");
 
     // Circles
     node.append("circle")
-      .attr("r", (d) => (d.id === selected ? 26 : 20))
+      .attr("class", "node-core")
+      .attr("r", (d) => (d.id === selectedHostId ? 24 : 20))
       .attr("fill", (d) => (d.type === "scanner" ? "var(--color-accent-primary)" : getColor(d.os)))
       .attr("stroke", "rgba(255,255,255,0.15)")
       .attr("stroke-width", 1.5);
@@ -143,7 +180,7 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
       .attr("font-size", "10px")
       .attr("fill", "#fff")
       .attr("font-weight", "bold")
-      .text((d) => d.type === "scanner" ? "◎" : d.label.split(".").pop());
+      .text((d) => String(d.ip || d.label || "?").split(".").pop());
 
     // Label below circle
     node.append("text")
@@ -152,11 +189,10 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
       .attr("font-family", "JetBrains Mono, Fira Code, monospace")
       .attr("font-size", "11px")
       .attr("fill", "rgba(255,255,255,0.9)")
-      .text((d) => d.label);
+      .text((d) => d.ip || d.label);
 
     // OS sub-label
-    node.filter((d) => d.type === "host")
-      .append("text")
+    node.append("text")
       .attr("y", 48)
       .attr("text-anchor", "middle")
       .attr("font-size", "9px")
@@ -170,6 +206,10 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
         .attr("x2", (d) => d.target.x)
         .attr("y2", (d) => d.target.y);
       node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+
+      nodes.forEach((n) => {
+        positionRef.current.set(n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy });
+      });
     });
 
     if (zoomInRef.current) {
@@ -194,7 +234,7 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200 })
       if (zoomOutRef.current) d3.select(zoomOutRef.current).on("click", null);
       if (zoomResetRef.current) d3.select(zoomResetRef.current).on("click", null);
     };
-  }, [hosts, maxHosts, onSelectHost, selected]);
+  }, [hosts, maxHosts, onSelectHost]);
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-lg bg-bg-app">

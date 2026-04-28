@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import NetworkMap from "../components/NetworkMap";
 import PortMatrix from "../components/PortMatrix";
 import OSFingerprintPanel from "../components/OSFingerprintPanel";
 import PacketInspector from "../components/PacketInspector";
 import { useScan } from "../hooks/useScan";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { useInventory } from "../hooks/useInventory";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 
 function RadarIcon({ className = "h-5 w-5" }) {
   return (
@@ -50,6 +52,157 @@ const TABS = [
   { id: "os", label: "OS Fingerprints" },
   { id: "pkts", label: "Packet Inspector" },
 ];
+
+const RISKY_PORTS = {
+  21: { severity: "medium", title: "FTP Service Exposed", cve: "CWE-200", cvss: 5.3 },
+  23: { severity: "high", title: "Telnet Service Exposed", cve: "CWE-319", cvss: 7.5 },
+  445: { severity: "high", title: "SMB Service Exposed", cve: "CVE-2017-0144", cvss: 8.1 },
+  3389: { severity: "medium", title: "RDP Service Exposed", cve: "CWE-284", cvss: 6.5 },
+  6379: { severity: "high", title: "Redis Service Exposed", cve: "CWE-306", cvss: 7.5 },
+};
+
+const SEVERITY_BADGE = {
+  critical: "bg-threat-critical/20 border-threat-critical/40 text-threat-critical",
+  high: "bg-threat-high/20 border-threat-high/40 text-threat-high",
+  medium: "bg-threat-medium/20 border-threat-medium/40 text-threat-medium",
+  low: "bg-threat-low/20 border-threat-low/40 text-threat-low",
+  info: "bg-bg-elevated border-border-default text-text-tertiary",
+};
+
+function asIsoTime(value) {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return null;
+  return new Date(parsed).toISOString();
+}
+
+function formatClock(value) {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return "--:--:--";
+  return new Date(parsed).toLocaleTimeString();
+}
+
+function normalizeIp(value) {
+  return String(value || "").trim();
+}
+
+function isUsableEndpointIp(value) {
+  const ip = normalizeIp(value);
+  if (!ip) return false;
+  if (ip.includes(":")) return false;
+  if (ip.startsWith("127.")) return false;
+  if (ip.startsWith("169.254.")) return false;
+  if (ip === "0.0.0.0") return false;
+
+  const parts = ip.split(".").map((n) => Number(n));
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  return true;
+}
+
+function endpointIpRank(ip) {
+  if (ip.startsWith("192.168.")) return 3;
+  if (ip.startsWith("10.")) return 2;
+  if (ip.startsWith("172.")) {
+    const secondOctet = Number(ip.split(".")[1]);
+    if (Number.isInteger(secondOctet) && secondOctet >= 16 && secondOctet <= 31) return 2;
+  }
+  return 1;
+}
+
+function pickPrimaryEndpointIp(ips) {
+  if (!Array.isArray(ips)) return "";
+  const usable = ips.map((raw) => normalizeIp(raw)).filter((ip) => isUsableEndpointIp(ip));
+  if (!usable.length) return "";
+  return [...usable].sort((a, b) => endpointIpRank(b) - endpointIpRank(a))[0];
+}
+
+function normalizeToken(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeSeverity(value) {
+  const sev = String(value || "low").toLowerCase();
+  if (["critical", "high", "medium", "low", "info"].includes(sev)) return sev;
+  return "low";
+}
+
+function toUnitConfidence(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  if (numeric > 1) return Math.max(0, Math.min(1, numeric / 100));
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function inferVulnMetadataFromAlert(alert) {
+  const msg = String(alert?.message || alert?.type || "").toLowerCase();
+  if (msg.includes("eternalblue") || msg.includes("smbv1")) {
+    return { title: "SMBv1 Enabled - EternalBlue", cve: "CVE-2017-0144", cvss: 8.1 };
+  }
+  if (msg.includes("path traversal") || msg.includes("apache")) {
+    return { title: "Apache HTTP Server Path Traversal", cve: "CVE-2021-41773", cvss: 9.8 };
+  }
+  if (msg.includes("redis") && msg.includes("auth")) {
+    return { title: "Redis No Authentication", cve: "CWE-306", cvss: 7.5 };
+  }
+  if (msg.includes("ssh") && msg.includes("key")) {
+    return { title: "Weak SSH Host Key", cve: "CWE-326", cvss: 5.3 };
+  }
+  return {
+    title: alert?.message || alert?.type || "Security Finding",
+    cve: "CWE-200",
+    cvss: normalizeSeverity(alert?.severity) === "critical" ? 9.0 : 6.0,
+  };
+}
+
+function buildVulnerabilityLog(alerts, portResults) {
+  const entries = [];
+  const seen = new Set();
+
+  (alerts || []).forEach((alert, idx) => {
+    const host = alert?.src_ip && alert.src_ip !== "scanner" ? alert.src_ip : alert?.dst_ip || "unknown";
+    const base = inferVulnMetadataFromAlert(alert);
+    const key = `${host}-${alert?.type || "alert"}-${alert?.timestamp || idx}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push({
+      id: key,
+      source: "alert",
+      severity: normalizeSeverity(alert?.severity),
+      title: base.title,
+      cve: base.cve,
+      cvss: Number(base.cvss || 0),
+      host,
+      port: "--",
+      timestamp: asIsoTime(alert?.timestamp) || new Date().toISOString(),
+    });
+  });
+
+  (portResults || []).forEach((result, idx) => {
+    if (String(result?.status || "").toLowerCase() !== "open") return;
+    const port = Number(result?.port);
+    if (!Number.isInteger(port) || !RISKY_PORTS[port]) return;
+    const meta = RISKY_PORTS[port];
+    const host = result?.ip || "unknown";
+    const key = `${host}-${port}-${result?.timestamp || idx}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push({
+      id: key,
+      source: "port_result",
+      severity: meta.severity,
+      title: meta.title,
+      cve: meta.cve,
+      cvss: meta.cvss,
+      host,
+      port,
+      timestamp: asIsoTime(result?.timestamp) || new Date().toISOString(),
+    });
+  });
+
+  return entries.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+}
 
 function parsePorts(rawValue) {
   const value = String(rawValue || "").trim();
@@ -110,45 +263,101 @@ function ScanCard({
   disabled,
 }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-border-default bg-bg-card shadow-card transition-shadow duration-150 hover:shadow-card-hover">
-      <div className={`${topAccentClass} rounded-t-lg`} style={{ height: "3px" }} />
+    <div className="group/card card-premium-interactive overflow-hidden flex flex-col transition-all duration-300 animate-slide-in-bottom hover:elevation-3">
+      {/* Top accent stripe */}
+      <div className={`${topAccentClass} h-0.5 w-full transition-all duration-300 group-hover/card:h-1`} />
 
-      <div className="p-4">
-        <div className="mb-4 flex items-center gap-2">
-          <Icon className={iconClass} />
-          <h3 className="text-md font-semibold text-text-primary">{title}</h3>
-          <span className={`ml-auto rounded-md px-2 py-1 text-sm font-medium ${statusBadgeClass(status)}`}>{status}</span>
+      {/* Content */}
+      <div className="flex-1 p-6 flex flex-col">
+        {/* Header */}
+        <div className="mb-5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`flex-shrink-0 p-2 rounded-lg ${
+              topAccentClass === "bg-status-success" ? "bg-status-success/20" :
+              topAccentClass === "bg-accent-primary" ? "bg-accent-primary/20" :
+              "bg-os-macos/20"
+            }`}>
+              <Icon className={iconClass} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-lg font-bold text-text-primary group-hover/card:text-accent-primary transition-colors duration-200">{title}</h3>
+              <p className="text-xs font-medium text-text-tertiary mt-0.5">{description}</p>
+            </div>
+          </div>
+
+          {/* Status badge */}
+          <div className={`badge-premium flex-shrink-0 ${
+            status === "Running" ? "badge-premium-critical" :
+            status === "Complete" ? "badge-premium-success" :
+            "bg-bg-elevated border-border-default text-text-secondary"
+          }`}>
+            {status === "Running" && (
+              <>
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-threat-critical opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-threat-critical" />
+                </span>
+              </>
+            )}
+            {status === "Complete" && (
+              <svg className="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+              </svg>
+            )}
+            <span className="text-xs font-semibold">{status}</span>
+          </div>
         </div>
 
-        <div className="space-y-3">{children}</div>
+        {/* Form fields */}
+        <div className="space-y-4 mb-6 flex-1">
+          {children}
+        </div>
 
-        <p className="mt-3 text-xs text-text-tertiary">{description}</p>
-
+        {/* Action button */}
         {status === "Running" ? (
           <button
             type="button"
             onClick={onStop}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-threat-critical py-2.5 text-sm font-semibold text-text-primary transition-all duration-150 active:scale-[0.98]"
+            className="group/btn relative mt-auto w-full overflow-hidden rounded-lg px-4 py-3 text-sm font-semibold text-bg-app transition-all duration-300 active:scale-95"
           >
-            <SpinnerIcon />
-            ■ Stop Scan
+            <div className="absolute inset-0 bg-gradient-to-r from-threat-critical to-threat-high" />
+            <div className="absolute inset-0 opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300"
+              style={{
+                boxShadow: "0 0 20px rgba(239, 68, 68, 0.4), inset 0 0 10px rgba(255, 255, 255, 0.1)",
+              }}
+            />
+            <span className="relative flex items-center justify-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+              Stop Scan
+            </span>
           </button>
         ) : status === "Complete" ? (
-          <button
-            type="button"
-            disabled
-            className="mt-4 w-full rounded-md border border-status-success bg-status-success/20 py-2.5 text-sm font-semibold text-status-success"
-          >
-            ✓ Complete
-          </button>
+          <div className="mt-auto w-full rounded-lg border border-status-success/50 bg-status-success/10 py-3 text-center text-sm font-semibold text-status-success">
+            ✓ Scan Complete
+          </div>
         ) : (
           <button
             type="button"
             onClick={onLaunch}
             disabled={disabled}
-            className={`mt-4 w-full rounded-md py-2.5 text-sm font-semibold text-text-primary transition-all duration-150 active:scale-[0.98] disabled:opacity-60 ${idleButtonClass}`}
+            className={`group/btn relative mt-auto w-full overflow-hidden rounded-lg px-4 py-3 text-sm font-semibold transition-all duration-300 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
           >
-            Launch Scan
+            {/* Button background - uses provided class for color */}
+            <div className={`absolute inset-0 ${idleButtonClass} transition-all duration-300`} />
+
+            {/* Glow on hover */}
+            <div className="absolute inset-0 opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300"
+              style={{
+                boxShadow: "0 0 20px rgba(0, 212, 255, 0.4), inset 0 0 10px rgba(255, 255, 255, 0.1)",
+              }}
+            />
+
+            <span className="relative flex items-center justify-center gap-2 text-text-primary">
+              Launch Scan
+              <svg className="h-4 w-4 transition-transform duration-300 group-hover/btn:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </span>
           </button>
         )}
       </div>
@@ -158,6 +367,8 @@ function ScanCard({
 
 export default function Dashboard({ onSessionStart }) {
   const { startHostDiscovery, startPortScan, startOsFingerprint, stopThread, loading, error } = useScan();
+  const { items: inventoryItems } = useInventory();
+  const { items: registryItems } = useAgentRegistry();
 
   const [sessionId, setSessionId] = useState(null);
   const [threadId, setThreadId] = useState(null);
@@ -167,19 +378,171 @@ export default function Dashboard({ onSessionStart }) {
   const [protocol, setProtocol] = useState("tcp");
   const [fpIp, setFpIp] = useState("192.168.56.20");
   const [activeTab, setActiveTab] = useState("map");
+  const [selectedEndpointIp, setSelectedEndpointIp] = useState(null);
 
   const [runningScanType, setRunningScanType] = useState(null);
   const [completedScanType, setCompletedScanType] = useState(null);
 
   const ws = useWebSocket(sessionId);
 
-  const hosts = useMemo(() => {
-    const map = new Map();
-    (ws.hosts || []).forEach((host) => {
-      if (host?.ip) map.set(host.ip, host);
+  const endpointHosts = useMemo(() => {
+    const byIp = new Map();
+    const byAgent = new Map();
+    const cloneIdentity = new Set();
+    const hasRegistry = Array.isArray(registryItems) && registryItems.length > 0;
+
+    // Seed with registered endpoints only.
+    (registryItems || []).forEach((item) => {
+      const ip = normalizeIp(item?.ip);
+      if (!isUsableEndpointIp(ip) || byIp.has(ip)) return;
+
+      const agentKey = normalizeToken(item?.agent_id || item?.hostname || ip);
+      if (agentKey && byAgent.has(agentKey)) return;
+
+      const identityKey = `${normalizeToken(item?.hostname)}|${normalizeToken(item?.os_name)}`;
+      if (identityKey !== "|" && cloneIdentity.has(identityKey)) return;
+      cloneIdentity.add(identityKey);
+
+      const endpoint = {
+        ip,
+        agent_id: item.agent_id || ip,
+        hostname: item.hostname || "--",
+        mac: "--",
+        os_guess: item.os_name || "unknown",
+        confidence: 0,
+        open_ports: [],
+        open_port_details: [],
+        source_tags: new Set(["registry"]),
+        last_seen: null,
+      };
+
+      byIp.set(ip, endpoint);
+      if (agentKey) byAgent.set(agentKey, endpoint);
     });
-    return Array.from(map.values());
-  }, [ws.hosts]);
+
+    (inventoryItems || []).forEach((item) => {
+      const agentKey = normalizeToken(item?.agent_id || item?.hostname);
+      let endpoint = agentKey ? byAgent.get(agentKey) : null;
+
+      if (!endpoint) {
+        const ips = Array.isArray(item?.ips) ? item.ips : [];
+        for (const rawIp of ips) {
+          const ip = normalizeIp(rawIp);
+          if (!isUsableEndpointIp(ip)) continue;
+          endpoint = byIp.get(ip);
+          if (endpoint) break;
+        }
+      }
+
+      if (!endpoint && !hasRegistry) {
+        const ip = pickPrimaryEndpointIp(item?.ips);
+        if (!ip || byIp.has(ip)) return;
+
+        endpoint = {
+          ip,
+          agent_id: item.agent_id || ip,
+          hostname: item.hostname || "--",
+          mac: (Array.isArray(item.macs) && item.macs[0]) || "--",
+          os_guess: [item.os_name, item.os_version].filter(Boolean).join(" ") || "unknown",
+          confidence: 0,
+          open_ports: Array.isArray(item.open_ports) ? item.open_ports : [],
+          open_port_details: [],
+          source_tags: new Set(["inventory"]),
+          last_seen: item.last_seen || null,
+        };
+
+        byIp.set(ip, endpoint);
+        if (agentKey) byAgent.set(agentKey, endpoint);
+      }
+
+      if (!endpoint) return;
+      endpoint.hostname = item.hostname || endpoint.hostname;
+      endpoint.mac = (Array.isArray(item.macs) && item.macs[0]) || endpoint.mac;
+      endpoint.os_guess = [item.os_name, item.os_version].filter(Boolean).join(" ") || endpoint.os_guess;
+      endpoint.open_ports = Array.isArray(item.open_ports) ? item.open_ports : endpoint.open_ports;
+      endpoint.last_seen = item.last_seen || endpoint.last_seen;
+      endpoint.source_tags.add("inventory");
+    });
+
+    (ws.hosts || []).forEach((host) => {
+      const ip = normalizeIp(host?.ip);
+      if (!isUsableEndpointIp(ip)) return;
+      const endpoint = byIp.get(ip);
+      if (!endpoint) return;
+      endpoint.hostname = host.hostname || endpoint.hostname;
+      endpoint.mac = host.mac || endpoint.mac;
+      endpoint.os_guess = host.os_guess || endpoint.os_guess;
+      endpoint.source_tags.add("discovery");
+    });
+
+    (ws.osResults || []).forEach((result) => {
+      const ip = normalizeIp(result?.ip);
+      if (!isUsableEndpointIp(ip)) return;
+      const endpoint = byIp.get(ip);
+      if (!endpoint) return;
+      endpoint.os_guess = result.os_guess || endpoint.os_guess;
+      endpoint.confidence = toUnitConfidence(result.confidence ?? endpoint.confidence);
+      endpoint.source_tags.add("fingerprint");
+    });
+
+    (ws.portResults || []).forEach((result) => {
+      const ip = normalizeIp(result?.ip);
+      if (!isUsableEndpointIp(ip)) return;
+      const endpoint = byIp.get(ip);
+      if (!endpoint) return;
+      const status = String(result?.status || "").toLowerCase();
+      if (status === "open" && Number.isInteger(Number(result.port))) {
+        endpoint.open_ports.push(Number(result.port));
+        endpoint.open_port_details.push({
+          port: Number(result.port),
+          protocol: result.protocol || "tcp",
+          status,
+          banner: result.banner || "",
+          timestamp: result.timestamp,
+        });
+      }
+      endpoint.source_tags.add("portscan");
+    });
+
+    return Array.from(byIp.values())
+      .map((endpoint) => ({
+        ...endpoint,
+        open_ports: Array.from(new Set(endpoint.open_ports)).sort((a, b) => a - b),
+        source_tags: Array.from(endpoint.source_tags),
+      }))
+      .sort((a, b) => a.ip.localeCompare(b.ip));
+  }, [ws.hosts, ws.osResults, ws.portResults, inventoryItems, registryItems]);
+
+  const handleSelectEndpoint = useCallback((host) => {
+    if (!host?.ip) return;
+    setSelectedEndpointIp(host.ip);
+    setScanIp(host.ip);
+    setFpIp(host.ip);
+  }, []);
+
+  const vulnerabilities = useMemo(() => {
+    return buildVulnerabilityLog(ws.alerts, ws.portResults);
+  }, [ws.alerts, ws.portResults]);
+
+  const selectedEndpoint = useMemo(() => {
+    if (!selectedEndpointIp) return endpointHosts[0] || null;
+    return endpointHosts.find((endpoint) => endpoint.ip === selectedEndpointIp) || endpointHosts[0] || null;
+  }, [endpointHosts, selectedEndpointIp]);
+
+  useEffect(() => {
+    if (!endpointHosts.length) {
+      setSelectedEndpointIp(null);
+      return;
+    }
+    if (!selectedEndpointIp || !endpointHosts.some((endpoint) => endpoint.ip === selectedEndpointIp)) {
+      setSelectedEndpointIp(endpointHosts[0].ip);
+    }
+  }, [endpointHosts, selectedEndpointIp]);
+
+  const selectedEndpointVulns = useMemo(() => {
+    if (!selectedEndpoint?.ip) return vulnerabilities;
+    return vulnerabilities.filter((v) => v.host === selectedEndpoint.ip);
+  }, [vulnerabilities, selectedEndpoint]);
 
   useEffect(() => {
     if (!completedScanType) return;
@@ -238,8 +601,9 @@ export default function Dashboard({ onSessionStart }) {
   const isSessionRunning = Boolean(runningScanType && sessionId);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+    <div className="scene-3d flex h-full min-h-0 flex-col gap-6">
+      {/* Scan Controls Grid */}
+      <section className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <ScanCard
           title="Host Discovery"
           Icon={RadarIcon}
@@ -253,12 +617,13 @@ export default function Dashboard({ onSessionStart }) {
           disabled={loading || Boolean(runningScanType)}
         >
           <div>
-            <label className="mb-1 block text-sm text-text-secondary">Subnet</label>
+            <label className="mb-2.5 block text-sm font-semibold text-text-primary">Subnet</label>
             <input
               value={subnet}
               onChange={(event) => setSubnet(event.target.value)}
               placeholder="192.168.56.0/24"
-              className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors duration-150 placeholder:text-text-tertiary focus:border-accent-border"
+              className="w-full rounded-lg border border-border-default bg-bg-input/60 px-4 py-2.5 font-mono text-sm text-text-primary outline-none transition-all duration-200 placeholder:text-text-tertiary focus:border-accent-primary focus:ring-2 focus:ring-accent-muted hover:border-border-elevated"
+              style={{ backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
             />
           </div>
         </ScanCard>
@@ -276,50 +641,44 @@ export default function Dashboard({ onSessionStart }) {
           disabled={loading || Boolean(runningScanType) || !scanIp}
         >
           <div>
-            <label className="mb-1 block text-sm text-text-secondary">Target IP</label>
+            <label className="mb-2.5 block text-sm font-semibold text-text-primary">Target IP</label>
             <input
               value={scanIp}
               onChange={(event) => setScanIp(event.target.value)}
               placeholder="192.168.56.20"
-              className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors duration-150 placeholder:text-text-tertiary focus:border-accent-border"
+              className="w-full rounded-lg border border-border-default bg-bg-input/60 px-4 py-2.5 font-mono text-sm text-text-primary outline-none transition-all duration-200 placeholder:text-text-tertiary focus:border-accent-primary focus:ring-2 focus:ring-accent-muted hover:border-border-elevated"
+              style={{ backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-text-secondary">Ports</label>
+            <label className="mb-2.5 block text-sm font-semibold text-text-primary">Ports</label>
             <input
               value={ports}
               onChange={(event) => setPorts(event.target.value)}
               placeholder="22,80,443,3389"
-              className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors duration-150 placeholder:text-text-tertiary focus:border-accent-border"
+              className="w-full rounded-lg border border-border-default bg-bg-input/60 px-4 py-2.5 font-mono text-sm text-text-primary outline-none transition-all duration-200 placeholder:text-text-tertiary focus:border-accent-primary focus:ring-2 focus:ring-accent-muted hover:border-border-elevated"
+              style={{ backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-text-secondary">Protocol</label>
-            <div className="inline-flex rounded-full border border-border-default bg-bg-elevated p-1">
-              <button
-                type="button"
-                onClick={() => setProtocol("tcp")}
-                className={`rounded-full px-3 py-1 text-sm font-medium transition-colors duration-150 ${
-                  protocol === "tcp"
-                    ? "bg-accent-muted text-accent-primary border border-border-accent"
-                    : "text-text-tertiary hover:text-text-secondary"
-                }`}
-              >
-                TCP
-              </button>
-              <button
-                type="button"
-                onClick={() => setProtocol("udp")}
-                className={`rounded-full px-3 py-1 text-sm font-medium transition-colors duration-150 ${
-                  protocol === "udp"
-                    ? "bg-accent-muted text-accent-primary border border-border-accent"
-                    : "text-text-tertiary hover:text-text-secondary"
-                }`}
-              >
-                UDP
-              </button>
+            <label className="mb-2.5 block text-sm font-semibold text-text-primary">Protocol</label>
+            <div className="inline-flex rounded-lg border border-border-default bg-bg-elevated/40 p-1.5" style={{ backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+              {["tcp", "udp"].map((proto) => (
+                <button
+                  key={proto}
+                  type="button"
+                  onClick={() => setProtocol(proto)}
+                  className={`rounded-md px-4 py-1.5 text-sm font-semibold transition-all duration-200 uppercase ${
+                    protocol === proto
+                      ? "bg-accent-primary text-bg-app shadow-card-glow"
+                      : "text-text-tertiary hover:text-text-secondary"
+                  }`}
+                >
+                  {proto}
+                </button>
+              ))}
             </div>
           </div>
         </ScanCard>
@@ -337,102 +696,250 @@ export default function Dashboard({ onSessionStart }) {
           disabled={loading || Boolean(runningScanType) || !fpIp}
         >
           <div>
-            <label className="mb-1 block text-sm text-text-secondary">Target IP</label>
+            <label className="mb-2.5 block text-sm font-semibold text-text-primary">Target IP</label>
             <input
               value={fpIp}
               onChange={(event) => setFpIp(event.target.value)}
               placeholder="192.168.56.20"
-              className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2 font-mono text-sm text-text-primary outline-none transition-colors duration-150 placeholder:text-text-tertiary focus:border-accent-border"
+              className="w-full rounded-lg border border-border-default bg-bg-input/60 px-4 py-2.5 font-mono text-sm text-text-primary outline-none transition-all duration-200 placeholder:text-text-tertiary focus:border-accent-primary focus:ring-2 focus:ring-accent-muted hover:border-border-elevated"
+              style={{ backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
             />
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <span className="rounded-full border border-border-default bg-bg-elevated px-3 py-1 text-sm text-text-tertiary">TTL Analysis</span>
-            <span className="rounded-full border border-border-default bg-bg-elevated px-3 py-1 text-sm text-text-tertiary">TCP Window</span>
-            <span className="rounded-full border border-border-default bg-bg-elevated px-3 py-1 text-sm text-text-tertiary">Xmas Scan</span>
+            {["TTL Analysis", "TCP Window", "Xmas Scan"].map((label) => (
+              <span key={label} className="rounded-full border border-border-default bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-text-tertiary">
+                {label}
+              </span>
+            ))}
           </div>
         </ScanCard>
       </section>
 
+      {/* Session Status Bar */}
       {isSessionRunning && (
-        <section className="flex items-center gap-3 rounded-lg border border-accent-border bg-bg-elevated px-4 py-3">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-status-success animate-pulse" />
-            <span className="text-sm text-text-primary">Session active</span>
-            <span className="truncate font-mono text-xs text-text-tertiary">{sessionPreview}</span>
+        <section className="group/session card-premium relative overflow-hidden animate-slide-in-bottom tilt-3d">
+          {/* Animated background gradient */}
+          <div className="absolute inset-0 opacity-0 group-hover/session:opacity-100 transition-opacity duration-500"
+            style={{
+              background: "linear-gradient(90deg, transparent, rgba(0,212,255,0.05), transparent)",
+            }}
+          />
+
+          <div className="relative flex items-center gap-4 p-5">
+            {/* Status indicator */}
+            <div className="flex items-center gap-3">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-online opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-status-online" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-text-primary">Session Active</p>
+                <p className="truncate font-mono text-xs text-text-tertiary">{sessionPreview}</p>
+              </div>
+            </div>
+
+            {/* Metrics */}
+            <div className="ml-auto flex items-center gap-6">
+              <div className="text-right">
+                <p className="text-xs font-medium text-text-tertiary uppercase tracking-wide">Traffic Rate</p>
+                <p className="font-mono text-xl font-bold text-accent-primary mt-1">{ws.pps} <span className="text-xs text-text-tertiary">pkt/s</span></p>
+              </div>
+
+              {/* Stop button */}
+              <button
+                type="button"
+                onClick={stopAllScans}
+                className="group/btn relative flex-shrink-0 overflow-hidden rounded-lg px-4 py-2.5 text-sm font-semibold text-text-primary transition-all duration-300 active:scale-95"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-threat-critical to-threat-high" />
+                <div className="absolute inset-0 opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300"
+                  style={{
+                    boxShadow: "0 0 16px rgba(239, 68, 68, 0.4), inset 0 0 8px rgba(255, 255, 255, 0.1)",
+                  }}
+                />
+                <span className="relative flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
+                  Stop All
+                </span>
+              </button>
+            </div>
           </div>
-
-          <div className="font-mono text-lg font-bold text-accent-primary">{ws.pps} pkt/s</div>
-
-          <button
-            type="button"
-            onClick={stopAllScans}
-            className="rounded-md border border-border-danger bg-threat-critical/10 px-3 py-1.5 text-sm text-threat-critical transition-colors duration-150 hover:bg-threat-critical-bg"
-          >
-            ■ Stop All
-          </button>
         </section>
       )}
 
+      {/* Error Alert */}
       {error && (
-        <div className="rounded-lg border border-border-danger bg-threat-critical-bg px-4 py-3 text-sm text-threat-critical-text">
-          {error}
+        <div className="card-premium border-l-4 border-threat-critical bg-gradient-to-r from-threat-critical-bg to-threat-critical-bg/50 text-threat-critical-text p-4 animate-slide-in-bottom">
+          <div className="flex items-start gap-3">
+            <svg className="h-5 w-5 flex-shrink-0 mt-0.5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+            </svg>
+            <p className="text-sm font-medium">{error}</p>
+          </div>
         </div>
       )}
 
-      <section className="flex min-h-0 flex-1 flex-col">
-        <div className="border-b border-border-default">
-          <div className="flex gap-1">
-            {TABS.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`-mb-px border-b-2 px-4 py-2.5 text-sm font-medium transition-colors duration-150 ${
-                    isActive
-                      ? "border-accent-primary text-accent-primary"
-                      : "border-transparent text-text-tertiary hover:border-border-elevated hover:text-text-secondary"
-                  }`}
-                >
+      {/* Visualization Tabs and Content */}
+      <section className="flex min-h-0 flex-1 flex-col gap-4">
+        {/* Tab Navigation */}
+        <div className="flex gap-2 border-b border-border-premium/40 overflow-x-auto">
+          {TABS.map((tab, idx) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative px-5 py-3.5 text-sm font-semibold transition-all duration-300 whitespace-nowrap stagger-item`}
+                style={{ animationDelay: `${idx * 30}ms` }}
+              >
+                {/* Bottom border indicator */}
+                {isActive && (
+                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-accent-primary to-accent-hover rounded-full" />
+                )}
+
+                <span className={isActive ? "text-accent-primary" : "text-text-tertiary hover:text-text-secondary"}>
                   {tab.label}
-                </button>
-              );
-            })}
-          </div>
+                </span>
+              </button>
+            );
+          })}
         </div>
 
-        <div className="mt-3 flex min-h-0 flex-1">
-          <div className="flex min-h-0 w-full flex-1 rounded-lg border border-border-default bg-bg-card p-3">
+        {/* Content Area */}
+        <div className="flex min-h-0 flex-1 rounded-xl border border-border-premium overflow-hidden tilt-3d-soft" style={{
+          background: "linear-gradient(135deg, rgba(18, 27, 42, 0.5) 0%, rgba(22, 34, 53, 0.4) 100%)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
+        }}>
+          <div className="h-full w-full overflow-auto">
             {activeTab === "map" && (
-              <div className="h-full w-full">
-                <NetworkMap
-                  hosts={hosts}
-                  onSelectHost={(host) => {
-                    if (host?.ip) {
-                      setScanIp(host.ip);
-                      setFpIp(host.ip);
-                    }
-                  }}
-                />
+              <div className="h-full w-full p-4">
+                <div className="grid h-full min-h-[560px] grid-cols-1 gap-4 xl:grid-cols-[1.9fr_1fr]">
+                  <div className="panel-premium min-h-[560px] overflow-hidden">
+                    <NetworkMap
+                      hosts={endpointHosts}
+                      selectedHostId={selectedEndpoint?.ip || null}
+                      onSelectHost={handleSelectEndpoint}
+                    />
+                  </div>
+
+                  <div className="flex min-h-[560px] flex-col gap-4">
+                    <div className="panel-premium p-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <h3 className="text-xs uppercase tracking-widest text-text-tertiary">Endpoint Intel</h3>
+                        <span className="orbital-tag">{endpointHosts.length} endpoints</span>
+                      </div>
+
+                      {!selectedEndpoint ? (
+                        <div className="rounded-md border border-border-default bg-bg-elevated/60 px-3 py-2 text-sm text-text-tertiary">
+                          No endpoint selected yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="rounded-lg border border-border-default/70 bg-bg-elevated/60 p-3">
+                            <div className="font-mono text-lg font-semibold text-text-primary">{selectedEndpoint.ip}</div>
+                            <div className="mt-1 text-sm text-text-secondary">{selectedEndpoint.hostname || "unknown-host"}</div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-sm">
+                            <div className="rounded-md bg-bg-elevated px-3 py-2">
+                              <p className="text-xs text-text-tertiary">MAC</p>
+                              <p className="font-mono text-text-primary">{selectedEndpoint.mac || "--"}</p>
+                            </div>
+                            <div className="rounded-md bg-bg-elevated px-3 py-2">
+                              <p className="text-xs text-text-tertiary">OS</p>
+                              <p className="text-text-primary">{selectedEndpoint.os_guess || "unknown"}</p>
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="mb-1 flex items-center justify-between text-xs text-text-tertiary">
+                              <span>Fingerprint confidence</span>
+                              <span className="font-mono">{Math.round((Number(selectedEndpoint.confidence) || 0) * 100)}%</span>
+                            </div>
+                            <div className="h-2 rounded-full bg-bg-elevated">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-accent-primary to-status-success"
+                                style={{ width: `${Math.max(4, Math.min(100, Math.round((Number(selectedEndpoint.confidence) || 0) * 100)))}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <p className="mb-2 text-xs uppercase tracking-widest text-text-tertiary">Open Ports ({selectedEndpoint.open_ports.length})</p>
+                            {selectedEndpoint.open_ports.length === 0 ? (
+                              <div className="rounded-md bg-bg-elevated px-3 py-2 text-sm text-text-tertiary">No open ports observed yet.</div>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                {selectedEndpoint.open_ports.map((port) => (
+                                  <span key={port} className="orbital-tag font-mono">{port}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="text-xs text-text-tertiary">
+                            Sources: {(selectedEndpoint.source_tags || []).join(" · ") || "none"}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="panel-premium flex min-h-0 flex-1 flex-col overflow-hidden">
+                      <div className="flex items-center justify-between border-b border-border-default/60 px-4 py-3">
+                        <h3 className="text-xs uppercase tracking-widest text-text-tertiary">Vulnerabilities Log</h3>
+                        <span className="orbital-tag">{selectedEndpointVulns.length} logged</span>
+                      </div>
+
+                      <div className="min-h-0 flex-1 overflow-y-auto">
+                        {selectedEndpointVulns.length === 0 ? (
+                          <div className="px-4 py-4 text-sm text-text-tertiary">No vulnerabilities identified yet.</div>
+                        ) : (
+                          selectedEndpointVulns.map((vuln) => (
+                            <div key={vuln.id} className="endpoint-row border-b border-border-default/40 px-4 py-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-semibold text-text-primary">{vuln.title}</div>
+                                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
+                                    <span className="font-mono">{vuln.cve}</span>
+                                    <span className="font-mono">host {vuln.host}</span>
+                                    <span className="font-mono">port {vuln.port}</span>
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <span className={`inline-flex rounded-sm border px-2 py-0.5 text-xs font-medium ${SEVERITY_BADGE[vuln.severity] || SEVERITY_BADGE.low}`}>
+                                    {vuln.severity.toUpperCase()}
+                                  </span>
+                                  <div className="mt-1 font-mono text-xs text-text-tertiary">CVSS {vuln.cvss.toFixed(1)}</div>
+                                </div>
+                              </div>
+                              <div className="mt-1 font-mono text-xs text-text-tertiary">Logged at {formatClock(vuln.timestamp)}</div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
             {activeTab === "ports" && (
-              <div className="h-full w-full">
+              <div className="h-full w-full p-4">
                 <PortMatrix portResults={ws.portResults} />
               </div>
             )}
 
             {activeTab === "os" && (
-              <div className="h-full w-full">
-                <OSFingerprintPanel osResults={ws.osResults} hosts={hosts} />
+              <div className="h-full w-full p-4">
+                <OSFingerprintPanel osResults={ws.osResults} hosts={endpointHosts} />
               </div>
             )}
 
             {activeTab === "pkts" && (
-              <div className="h-full w-full">
+              <div className="h-full w-full p-4">
                 <PacketInspector packets={ws.packets} pps={ws.pps} wsStatus={ws.status} />
               </div>
             )}
@@ -442,3 +949,4 @@ export default function Dashboard({ onSessionStart }) {
     </div>
   );
 }
+

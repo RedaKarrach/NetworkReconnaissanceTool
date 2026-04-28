@@ -99,10 +99,10 @@ function AttackCard({ attack, activeThreads, onLaunch, onStop }) {
 
   return (
     <div
-      className={`flex flex-col rounded-lg border bg-bg-card p-5 transition-all duration-200 ${
+      className={`card-premium flex flex-col p-5 transition-all duration-200 ${
         isRunning
           ? "border-border-danger shadow-danger animate-pulse-critical"
-          : "border-border-default"
+          : ""
       }`}
     >
       <div className="mb-4 flex items-center gap-3">
@@ -136,7 +136,7 @@ function AttackCard({ attack, activeThreads, onLaunch, onStop }) {
               value={params[f.key] || ""}
               onChange={(e) => setParams((p) => ({ ...p, [f.key]: e.target.value }))}
               disabled={isRunning}
-              className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-border focus:outline-none disabled:opacity-50"
+              className="w-full rounded-lg border border-border-default bg-bg-input/70 px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-border focus:outline-none disabled:opacity-50"
             />
           </div>
         ))}
@@ -214,7 +214,7 @@ export default function AttackConsole({ onSessionStart }) {
   return (
     <div>
       {/* Warning banner */}
-      <div className="mb-4 flex items-center gap-2 rounded-lg border border-threat-high/30 bg-threat-high/10 px-4 py-3 text-sm text-threat-high">
+      <div className="mb-5 flex items-center gap-2 rounded-xl border border-threat-high/40 bg-threat-high/10 px-4 py-3.5 text-sm text-threat-high">
         <span className="text-threat-high">⚠</span>
         <span>Authorized lab environment only — 192.168.56.0/24 network</span>
       </div>
@@ -234,13 +234,13 @@ export default function AttackConsole({ onSessionStart }) {
 
       {/* Error */}
       {error && (
-        <div className="mt-4 rounded-md border border-border-danger bg-threat-critical/15 px-3 py-2 text-sm text-threat-critical">
+        <div className="mt-4 rounded-lg border border-border-danger bg-threat-critical/15 px-3 py-2.5 text-sm text-threat-critical">
           {error}
         </div>
       )}
 
       {/* Activity log */}
-      <div className="mt-6 overflow-hidden rounded-lg border border-border-default bg-bg-card">
+      <div className="panel-premium mt-6 overflow-hidden">
         <div className="px-4 pt-3 text-xs uppercase tracking-widest text-text-tertiary">ACTIVITY LOG</div>
         <div className="max-h-48 overflow-y-auto font-mono text-xs">
           {log.length === 0 ? (

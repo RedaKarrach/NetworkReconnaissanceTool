@@ -135,12 +135,12 @@ export default function SessionReport({ sessionId }) {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <div className="relative rounded-lg border border-border-default bg-bg-card p-5">
+      <div className="card-premium relative p-5">
         <div className="absolute right-5 top-5 flex items-center gap-2">
           <button
             onClick={loadReport}
             disabled={loading || !sessionId}
-            className="rounded-md border border-border-default bg-bg-elevated px-3 py-2 text-sm font-medium text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary disabled:opacity-50"
+            className="rounded-lg border border-border-default bg-bg-elevated/70 px-3 py-2 text-sm font-medium text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary disabled:opacity-50"
           >
             {loading ? "Loading…" : "Load Report"}
           </button>
@@ -149,7 +149,7 @@ export default function SessionReport({ sessionId }) {
               type="button"
               onClick={handleExport}
               disabled={exporting}
-              className="inline-flex items-center gap-2 rounded-md border border-accent-border bg-accent-muted px-4 py-2 text-sm font-medium text-accent-primary transition-colors duration-150 hover:bg-accent-primary hover:text-text-primary disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-lg border border-accent-border bg-accent-muted px-4 py-2 text-sm font-medium text-accent-primary transition-colors duration-150 hover:bg-accent-primary hover:text-text-primary disabled:opacity-60"
             >
               {exporting && (
                 <span className="h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
@@ -195,7 +195,7 @@ export default function SessionReport({ sessionId }) {
       )}
 
       {!data && !loading && (
-        <div className="rounded-lg border border-border-default bg-bg-card py-8 text-center text-sm text-text-tertiary">
+        <div className="card-premium py-8 text-center text-sm text-text-tertiary">
           {sessionId
             ? "Click 'Load Report' to fetch session results"
             : "No active session — run a scan first"}
@@ -204,7 +204,7 @@ export default function SessionReport({ sessionId }) {
 
       {data && (
         <>
-          <div className="rounded-lg border border-border-default bg-bg-card p-4">
+          <div className="card-premium p-4">
             <h3 className="mb-4 text-sm font-semibold text-text-primary">Port Status by Host</h3>
             {hasChartData ? (
               <ResponsiveContainer width="100%" height={220}>
@@ -232,8 +232,8 @@ export default function SessionReport({ sessionId }) {
             )}
           </div>
 
-          <div className="overflow-hidden rounded-lg border border-border-default bg-bg-card">
-            <div className="grid grid-cols-[80px_1.2fr_1fr_1fr_110px_130px] bg-bg-elevated px-4 py-2.5 text-xs uppercase text-text-tertiary">
+          <div className="panel-premium overflow-hidden">
+            <div className="grid grid-cols-[80px_1.2fr_1fr_1fr_110px_130px] bg-bg-elevated/80 px-4 py-2.5 text-xs uppercase text-text-tertiary">
               <span>STATUS</span>
               <span>IP ADDRESS</span>
               <span>MAC</span>
@@ -270,7 +270,7 @@ export default function SessionReport({ sessionId }) {
             </div>
           </div>
 
-          <div className="overflow-hidden rounded-lg border border-border-default bg-bg-card">
+          <div className="panel-premium overflow-hidden">
             <button
               type="button"
               onClick={() => setAlertsOpen((prev) => !prev)}

@@ -7,6 +7,8 @@ from .views import (
     InventoryIngestView, InventoryLatestView,
     AgentRegistryView,
     InboundPacketView,
+    SessionAlertsView,
+    SessionPacketsView,
 )
 
 try:
@@ -29,6 +31,10 @@ urlpatterns = [
     # Inbound alerts from VM agents
     path("alerts/",               InboundAlertView.as_view()),
     path("packets/",              InboundPacketView.as_view()),
+
+    # History for UI refreshes
+    path("alerts/history/<str:session_id>/", SessionAlertsView.as_view()),
+    path("packets/history/<str:session_id>/", SessionPacketsView.as_view()),
 
     # Agent inventory
     path("agents/inventory/",        InventoryIngestView.as_view()),

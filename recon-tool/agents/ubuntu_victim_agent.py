@@ -1,21 +1,21 @@
 """
-victim_agent.py — Run on the Windows 10 VM (as Administrator)
-=============================================================
-Sniffs the local network interface with Scapy, detects SYN flood
+ubuntu_victim_agent.py — Run on the Ubuntu "server" VM (as root)
+=================================================================
+Sniffs the local interface with Scapy, detects SYN flood
 and ARP spoofing in real time, and POSTs alerts to the host dashboard.
 
 Usage:
     pip install scapy requests
-    python victim_agent.py
+    sudo python ubuntu_victim_agent.py
 
 Requirements:
-    - Run as Administrator (Windows) or root (Linux)
-    - Npcap installed on Windows (https://npcap.com)
+    - Run as root (Linux)
     - Dashboard reachable at DASHBOARD_URL
 """
 
 import time
 import sys
+import os
 import requests
 import subprocess
 import platform
@@ -28,10 +28,10 @@ except ImportError:
     sys.exit(1)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-DASHBOARD_URL  = "http://192.168.56.1:8000/api/alerts/"   # Host machine IP
-PACKET_URL     = "http://192.168.56.1:8000/api/packets/"
-AGENT_NAME     = "win-victim"
-MY_IP          = "192.168.56.20"
+DASHBOARD_URL  = os.environ.get("DASHBOARD_URL", "http://192.168.56.1:8000/api/alerts/")
+PACKET_URL     = os.environ.get("PACKET_URL", "http://192.168.56.1:8000/api/packets/")
+AGENT_NAME     = os.environ.get("AGENT_NAME", "ubuntu-server")
+MY_IP          = os.environ.get("MY_IP", "192.168.56.30")
 
 # Detection thresholds (must match detection.py on the server)
 SYN_THRESHOLD  = 200   # SYNs from same IP within SYN_WINDOW seconds
@@ -58,6 +58,42 @@ port_sweep_alerted_at = {}              # src_ip -> last_alert_timestamp
 blocked_at = {}                          # ip -> last_block_timestamp
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+def post_alert(type_, src, dst, severity, message):
+    """Send alert to the Django dashboard."""
+    payload = {
+        "agent":    AGENT_NAME,
+        "type":     type_,
+        "src_ip":   src,
+        "dst_ip":   dst,
+        "severity": severity,
+        "message":  message,
+    }
+    try:
+        resp = requests.post(DASHBOARD_URL, json=payload, timeout=3)
+        status = "OK" if resp.status_code == 201 else f"HTTP {resp.status_code}"
+        print(f"  [ALERT SENT] {severity.upper():8s} | {type_:16s} | {message[:60]} [{status}]")
+    except requests.exceptions.ConnectionError:
+        print(f"  [ERR] Dashboard unreachable at {DASHBOARD_URL}")
+    except Exception as e:
+        print(f"  [ERR] {e}")
+
+
+def post_packet(summary, flags, src_ip, dst_ip, proto, ttl=0):
+    payload = {
+        "summary": summary,
+        "flags": flags,
+        "src_ip": src_ip,
+        "dst_ip": dst_ip,
+        "protocol": proto,
+        "ttl": ttl,
+    }
+    try:
+        requests.post(PACKET_URL, json=payload, timeout=2)
+    except Exception:
+        pass
+
+
 def _find_ip_by_mac(mac, exclude_ip=None):
     for ip, known_mac in arp_table.items():
         if ip == exclude_ip:
@@ -102,43 +138,9 @@ def _block_ip(ip, reason, now=None):
         print(f"  [ERR] Failed to block {ip}: {e}")
         return False
 
-# ─────────────────────────────────────────────────────────────────────────────
-def post_alert(type_, src, dst, severity, message):
-    """Send alert to the Django dashboard."""
-    payload = {
-        "agent":    AGENT_NAME,
-        "type":     type_,
-        "src_ip":   src,
-        "dst_ip":   dst,
-        "severity": severity,
-        "message":  message,
-    }
-    try:
-        resp = requests.post(DASHBOARD_URL, json=payload, timeout=3)
-        status = "OK" if resp.status_code == 201 else f"HTTP {resp.status_code}"
-        print(f"  [ALERT SENT] {severity.upper():8s} | {type_:16s} | {message[:60]} [{status}]")
-    except requests.exceptions.ConnectionError:
-        print(f"  [ERR] Dashboard unreachable at {DASHBOARD_URL}")
-    except Exception as e:
-        print(f"  [ERR] {e}")
-
-
-def post_packet(summary, flags, src_ip, dst_ip, proto, ttl=0):
-    payload = {
-        "summary": summary,
-        "flags": flags,
-        "src_ip": src_ip,
-        "dst_ip": dst_ip,
-        "protocol": proto,
-        "ttl": ttl,
-    }
-    try:
-        requests.post(PACKET_URL, json=payload, timeout=2)
-    except Exception:
-        pass
-
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 def on_packet(pkt):
     now = time.time()
 
@@ -166,7 +168,6 @@ def on_packet(pkt):
 
         if op == 2:
             if ip in arp_table and arp_table[ip] != mac:
-                # Avoid alert storm for the same IP
                 last = arp_alerted_at.get(ip, 0)
                 if now - last > ARP_COOLDOWN:
                     attacker_ip = _find_ip_by_mac(mac, exclude_ip=ip)
@@ -184,7 +185,7 @@ def on_packet(pkt):
                         _block_ip(attacker_ip, "ARP spoofing", now)
                     arp_alerted_at[ip] = now
 
-            arp_table[ip] = mac   # update table
+            arp_table[ip] = mac
 
     # ── TCP packet logging + SYN flood detection ─────────────────────────────
     if IP in pkt and TCP in pkt:
@@ -204,7 +205,6 @@ def on_packet(pkt):
         if pkt[TCP].flags != 0x02:
             return
 
-        # Slide the window
         syn_window[src] = [t for t in syn_window[src] if now - t < SYN_WINDOW]
         syn_window[src].append(now)
 
@@ -221,9 +221,8 @@ def on_packet(pkt):
                 )
             )
             _block_ip(src, "SYN flood", now)
-            syn_window[src].clear()   # reset to avoid alert storm
+            syn_window[src].clear()
 
-        # Distributed SYN flood detection (works with spoofed/random source IPs)
         syn_total_window[dport] = [t for t in syn_total_window[dport] if now - t < SYN_WINDOW]
         syn_total_window[dport].append(now)
         total_count = len(syn_total_window[dport])
@@ -242,7 +241,6 @@ def on_packet(pkt):
             syn_total_alerted_at[dport] = now
             syn_total_window[dport].clear()
 
-        # Port sweep / Nmap-like scan detection
         port_sweep_window[src] = [(t, p) for (t, p) in port_sweep_window[src] if now - t < PORT_SWEEP_WINDOW]
         port_sweep_window[src].append((now, dport))
         distinct_ports = len({p for _, p in port_sweep_window[src]})
@@ -290,9 +288,10 @@ def on_packet(pkt):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 def main():
     print("=" * 60)
-    print("  Victim Agent — Network Intrusion Detection")
+    print("  Ubuntu Server Agent — Network Intrusion Detection")
     print("=" * 60)
     print(f"  Agent name : {AGENT_NAME}")
     print(f"  My IP      : {MY_IP}")
@@ -305,7 +304,6 @@ def main():
     )
     print("=" * 60)
 
-    # Verify dashboard is reachable
     print("\n[*] Checking dashboard connectivity...", end=" ")
     try:
         requests.get(DASHBOARD_URL.replace("/api/alerts/", "/api/"), timeout=3)
@@ -329,7 +327,7 @@ def main():
     except KeyboardInterrupt:
         print("\n[*] Agent stopped.")
     except PermissionError:
-        print("\n[!] Permission denied. Run as Administrator.")
+        print("\n[!] Permission denied. Run as root.")
         sys.exit(1)
 
 

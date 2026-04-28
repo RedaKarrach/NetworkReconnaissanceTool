@@ -2,6 +2,8 @@ import React, { useMemo, useState } from "react";
 import { useInventory } from "../hooks/useInventory";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
 
+const ONLINE_WINDOW_MS = 300000;
+
 function fmtBytesGb(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   return `${Number(value).toFixed(1)} GB`;
@@ -24,7 +26,7 @@ function statusClass(status) {
 }
 
 export default function Inventory() {
-  const { items, status, error, refresh } = useInventory();
+  const { items, status, error, refresh, deleteInventoryItem } = useInventory();
   const { items: agents, error: agentError, addAgent, deleteAgent } = useAgentRegistry();
   const [query, setQuery] = useState("");
   const [form, setForm] = useState({ agent_id: "", hostname: "", ip: "", os_name: "" });
@@ -67,8 +69,14 @@ export default function Inventory() {
     if (ok) setForm({ agent_id: "", hostname: "", ip: "", os_name: "" });
   }
 
+  async function handleDeleteInventory(item) {
+    const confirmed = window.confirm(`Delete inventory entry for ${item.agent_id}?`);
+    if (!confirmed) return;
+    await deleteInventoryItem({ agent_id: item.agent_id });
+  }
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <p className="text-xs uppercase tracking-widest text-text-tertiary">Host Inventory</p>
@@ -83,11 +91,11 @@ export default function Inventory() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="filter by IP, host, OS..."
-            className="w-64 rounded-md border border-border-default bg-bg-input px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-border focus:outline-none"
+            className="w-64 rounded-lg border border-border-default bg-bg-input/70 px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent-border focus:outline-none"
           />
           <button
             onClick={refresh}
-            className="rounded-md border border-border-default bg-bg-elevated px-3 py-1.5 text-sm text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
+            className="rounded-lg border border-border-default bg-bg-elevated/70 px-3 py-2 text-sm text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
           >
             Refresh
           </button>
@@ -107,7 +115,7 @@ export default function Inventory() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="rounded-lg border border-border-default bg-bg-card p-4">
+        <div className="card-premium depth-rail p-4">
           <div className="mb-3 text-xs uppercase tracking-widest text-text-tertiary">Add Agent</div>
           <form className="grid grid-cols-1 md:grid-cols-2 gap-3" onSubmit={handleAddAgent}>
             <input
@@ -149,7 +157,7 @@ export default function Inventory() {
           </form>
         </div>
 
-        <div className="rounded-lg border border-border-default bg-bg-card p-4">
+        <div className="card-premium depth-rail p-4">
           <div className="mb-3 text-xs uppercase tracking-widest text-text-tertiary">Registered Agents</div>
           {agents.length === 0 ? (
             <div className="text-sm text-text-tertiary">No agents registered yet.</div>
@@ -158,9 +166,9 @@ export default function Inventory() {
               {agents.map((a) => {
                 const live = inventoryByAgent.get(a.agent_id) || inventoryByAgent.get(a.hostname) || inventoryByAgent.get(a.ip);
                 const lastSeen = live?.last_seen ? new Date(live.last_seen) : null;
-                const online = lastSeen ? Date.now() - lastSeen.getTime() < 120000 : false;
+                const online = lastSeen ? Date.now() - lastSeen.getTime() < ONLINE_WINDOW_MS : false;
                 return (
-                  <div key={a.agent_id} className="flex items-center gap-3 rounded-md border border-border-default bg-bg-elevated px-3 py-2">
+                  <div key={a.agent_id} className="agent-chip flex items-center gap-3">
                     <span className={`h-2 w-2 rounded-full ${online ? "bg-status-success" : "bg-status-offline"}`} />
                     <div className="flex-1 min-w-0">
                       <div className="truncate text-sm text-text-primary">{a.agent_id}</div>
@@ -190,8 +198,8 @@ export default function Inventory() {
           No inventory yet — start the inventory agent on your VMs.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border-default bg-bg-card">
-          <div className="border-b border-border-default bg-bg-elevated px-4 py-2 text-xs uppercase tracking-widest text-text-tertiary">
+        <div className="panel-premium endpoint-table-shell overflow-hidden">
+          <div className="border-b border-border-default/60 bg-bg-elevated/80 px-4 py-2 text-xs uppercase tracking-widest text-text-tertiary">
             {filtered.length} hosts
           </div>
           <div className="overflow-x-auto">
@@ -208,11 +216,12 @@ export default function Inventory() {
                   <th className="px-4 py-2 text-left">Disk</th>
                   <th className="px-4 py-2 text-left">Uptime</th>
                   <th className="px-4 py-2 text-left">Last Seen</th>
+                  <th className="px-4 py-2 text-left">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((item) => (
-                  <tr key={item.agent_id} className="border-b border-border-default/50 hover:bg-bg-card-hover">
+                  <tr key={item.agent_id} className="endpoint-row border-b border-border-default/50 hover:bg-bg-card-hover">
                     <td className="px-4 py-2 font-mono text-accent-primary">{item.agent_id}</td>
                     <td className="px-4 py-2 text-text-primary">{item.hostname || "—"}</td>
                     <td className="px-4 py-2 text-text-secondary">
@@ -236,6 +245,14 @@ export default function Inventory() {
                     <td className="px-4 py-2 text-text-secondary">{fmtUptime(item.uptime_sec)}</td>
                     <td className="px-4 py-2 font-mono text-text-tertiary">
                       {item.last_seen ? new Date(item.last_seen).toLocaleString() : "—"}
+                    </td>
+                    <td className="px-4 py-2">
+                      <button
+                        onClick={() => handleDeleteInventory(item)}
+                        className="rounded-sm border border-border-danger px-2 py-1 text-xs text-threat-critical transition-colors duration-150 hover:bg-threat-critical/10"
+                      >
+                        Delete
+                      </button>
                     </td>
                   </tr>
                 ))}

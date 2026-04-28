@@ -10,6 +10,7 @@ import threading
 import platform
 import subprocess
 import ipaddress
+import re
 from datetime import datetime
 
 from rest_framework.views import APIView
@@ -41,6 +42,8 @@ from django.http import HttpResponse
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+PACKET_LOG_CAP = 5000
+
 def _new_session(subnet=""):
     sid = str(uuid.uuid4())
     session = ScanSession(session_id=sid, subnet=subnet, status="running")
@@ -59,8 +62,21 @@ def _log_packet(session, pkt_dict):
         dst_ip    = pkt_dict.get("dst_ip", ""),
         protocol  = pkt_dict.get("protocol", ""),
     ).save()
+    _trim_packet_logs(session)
     broadcast_packet(session.session_id, pkt_dict)
     broadcast_packet("live", pkt_dict)
+
+
+def _trim_packet_logs(session):
+    """Keep packet logs bounded per session to reduce storage churn."""
+    try:
+        total = PacketLog.objects(session=session).count()
+        if total <= PACKET_LOG_CAP:
+            return
+        excess = total - PACKET_LOG_CAP
+        PacketLog.objects(session=session).order_by("timestamp").limit(excess).delete()
+    except Exception:
+        pass
 
 
 def _emit_alert(session, alert_dict):
@@ -223,9 +239,6 @@ class PortScanView(APIView):
         if not _is_ip_allowed(ip):
             return Response({"error": "ip not in allowed subnet"}, status=400)
 
-        if not (_is_registered_agent_ip(ip) or _has_recent_inventory(ip) or _is_ip_reachable(ip)):
-            return Response({"error": "ip unreachable"}, status=400)
-
         session, session_id = _new_session()
 
         # Find or create a Host record for this IP
@@ -286,6 +299,16 @@ class PortScanView(APIView):
             "timestamp": datetime.utcnow().isoformat(),
         })
 
+        # Treat operator-launched endpoint scans as scan activity alerts
+        _emit_alert(session, {
+            "type": "nmap_scan_detected",
+            "src_ip": "scanner",
+            "dst_ip": ip,
+            "severity": "medium",
+            "message": f"Nmap-like port scan activity detected toward {ip} ({len(ports)} ports)",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
         return Response({
             "session_id": session_id,
             "thread_id":  thread_id,
@@ -310,9 +333,6 @@ class OSFingerprintView(APIView):
 
         if not _is_ip_allowed(ip):
             return Response({"error": "ip not in allowed subnet"}, status=400)
-
-        if not (_is_registered_agent_ip(ip) or _has_recent_inventory(ip) or _is_ip_reachable(ip)):
-            return Response({"error": "ip unreachable"}, status=400)
 
         session, session_id = _new_session()
 
@@ -492,6 +512,75 @@ class SYNFloodView(APIView):
         }, status=202)
 
 
+class ICMPRedirectView(APIView):
+    """POST /api/attack/icmp-redirect/  { target_ip, spoofed_gateway, attacker_ip, destination_ip }"""
+
+    def post(self, request):
+        target_ip = request.data.get("target_ip")
+        spoofed_gateway = request.data.get("spoofed_gateway")
+        attacker_ip = request.data.get("attacker_ip")
+        destination_ip = request.data.get("destination_ip", "8.8.8.8")
+
+        if not target_ip or not spoofed_gateway or not attacker_ip:
+            return Response({"error": "target_ip, spoofed_gateway and attacker_ip required"}, status=400)
+
+        session, session_id = _new_session()
+
+        attack_log = AttackLog(
+            session=session,
+            attack_type="icmp_redirect",
+            target_ip=target_ip,
+            params=json.dumps({
+                "spoofed_gateway": spoofed_gateway,
+                "attacker_ip": attacker_ip,
+                "destination_ip": destination_ip,
+            }),
+            status="running",
+        )
+        attack_log.save()
+
+        def _run(stop_flag):
+            def on_pkt(pkt_dict):
+                attack_log.packets_sent += 1
+                attack_log.save()
+                _log_packet(session, pkt_dict)
+
+            icmp_redirect(
+                target_ip=target_ip,
+                spoofed_gateway=spoofed_gateway,
+                attacker_ip=attacker_ip,
+                destination_ip=destination_ip,
+                stop_flag=stop_flag,
+                on_packet=on_pkt,
+            )
+
+            attack_log.status = "stopped"
+            attack_log.stopped_at = datetime.utcnow()
+            attack_log.save()
+            broadcast_status(session_id, "stopped", {"message": "ICMP redirect stopped"})
+
+        thread_id = start_thread(target=_run, name=f"icmp-redirect-{target_ip}")
+
+        _emit_alert(session, {
+            "type": "icmp_redirect",
+            "src_ip": spoofed_gateway,
+            "dst_ip": target_ip,
+            "severity": "high",
+            "message": f"ICMP redirect started against {target_ip} (dst {destination_ip} via {attacker_ip})",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
+        return Response({
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "target_ip": target_ip,
+            "spoofed_gateway": spoofed_gateway,
+            "attacker_ip": attacker_ip,
+            "destination_ip": destination_ip,
+            "status": "running",
+        }, status=202)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Stop any thread
 # ─────────────────────────────────────────────────────────────────────────────
@@ -577,6 +666,36 @@ class InventoryIngestView(APIView):
         broadcast_inventory(payload)
 
         return Response({"status": "ok", "agent_id": agent_id}, status=201)
+
+    def delete(self, request):
+        if not _check_agent_token(request):
+            return Response({"error": "unauthorized"}, status=401)
+
+        data = request.data or {}
+        agent_id = data.get("agent_id")
+        hostname = data.get("hostname")
+        ip = data.get("ip")
+
+        if not agent_id and not hostname and not ip:
+            return Response({"error": "agent_id, hostname or ip required"}, status=400)
+
+        query = {}
+        if agent_id:
+            query["agent_id"] = agent_id
+        if hostname:
+            query["hostname"] = hostname
+        if ip:
+            query["ips__contains"] = ip
+
+        inventory = HostInventory.objects(**query).first()
+        if not inventory:
+            return Response({"error": "inventory entry not found"}, status=404)
+
+        deleted_agent_id = inventory.agent_id
+        inventory.delete()
+        broadcast_inventory({"event_type": "inventory_deleted", "agent_id": deleted_agent_id})
+
+        return Response({"status": "deleted", "agent_id": deleted_agent_id})
 
 
 class InventoryLatestView(APIView):
@@ -692,7 +811,7 @@ class SessionResultsView(APIView):
     """GET /api/results/<session_id>/"""
 
     def get(self, request, session_id):
-        session = ScanSession.objects(session_id=session_id).first()
+        session = _get_live_session() if session_id == "live" else ScanSession.objects(session_id=session_id).first()
         if not session:
             return Response({"error": "session not found"}, status=404)
 
@@ -738,6 +857,65 @@ class SessionResultsView(APIView):
             ],
             "packet_count": packets.count()
         })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7b. Session history endpoints (alerts + packets)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SessionAlertsView(APIView):
+    """GET /api/alerts/history/<session_id>/?limit=200"""
+
+    def get(self, request, session_id):
+        session = _get_live_session() if session_id == "live" else ScanSession.objects(session_id=session_id).first()
+        if not session:
+            return Response({"error": "session not found"}, status=404)
+
+        limit = int(request.query_params.get("limit", 200))
+        limit = min(max(limit, 1), 500)
+
+        alerts = Alert.objects(session=session).order_by("-timestamp").limit(limit)
+        payload = [
+            {
+                "type":      a.type,
+                "src_ip":    a.src_ip,
+                "dst_ip":    a.dst_ip,
+                "severity":  a.severity,
+                "message":   a.message,
+                "timestamp": a.timestamp.isoformat(),
+            }
+            for a in alerts
+        ]
+
+        return Response({"items": payload})
+
+
+class SessionPacketsView(APIView):
+    """GET /api/packets/history/<session_id>/?limit=500"""
+
+    def get(self, request, session_id):
+        session = ScanSession.objects(session_id=session_id).first()
+        if not session:
+            return Response({"error": "session not found"}, status=404)
+
+        limit = int(request.query_params.get("limit", 500))
+        limit = min(max(limit, 1), 1000)
+
+        packets = PacketLog.objects(session=session).order_by("-timestamp").limit(limit)
+        payload = [
+            {
+                "summary":   p.summary,
+                "flags":     p.flags,
+                "ttl":       p.ttl,
+                "src_ip":    p.src_ip,
+                "dst_ip":    p.dst_ip,
+                "protocol":  p.protocol,
+                "timestamp": p.timestamp.isoformat(),
+            }
+            for p in packets
+        ]
+
+        return Response({"items": payload})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -894,6 +1072,54 @@ class InboundPacketView(APIView):
             dst_ip    = pkt["dst_ip"],
             protocol  = pkt["protocol"],
         ).save()
+        _trim_packet_logs(session)
+
+        # Passive detections from VM-reported packet stream.
+        proto = str(pkt.get("protocol", "")).upper()
+        flags = str(pkt.get("flags", "")).upper()
+        summary = str(pkt.get("summary", ""))
+        src_ip = pkt.get("src_ip", "")
+        dst_ip = pkt.get("dst_ip", "")
+
+        if proto == "ARP" and "is at" in summary.lower() and src_ip:
+            # Summary format: "ARP reply: <ip> is at <mac>"
+            mac_match = re.search(r"is\s+at\s+([0-9a-fA-F:]{11,17})", summary)
+            if mac_match:
+                detection.check_arp(
+                    session,
+                    ip=src_ip,
+                    mac=mac_match.group(1),
+                    on_alert=lambda a: _emit_alert(session, a),
+                )
+
+        if proto == "TCP" and flags in {"S", "SYN"}:
+            port_match = re.search(r":(\d{1,5})(?:\D|$)", summary)
+            if not port_match:
+                port_match = re.search(r"port\s+(\d{1,5})(?:\D|$)", summary, flags=re.IGNORECASE)
+            dst_port = int(port_match.group(1)) if port_match else 0
+            if 0 < dst_port <= 65535:
+                detection.check_syn_flood(
+                    session,
+                    dst_ip=dst_ip or "unknown",
+                    dst_port=dst_port,
+                    on_alert=lambda a: _emit_alert(session, a),
+                )
+                detection.check_port_sweep(
+                    session,
+                    src_ip=src_ip or "unknown",
+                    dst_port=dst_port,
+                    on_alert=lambda a: _emit_alert(session, a),
+                )
+
+        if proto == "ICMP" and ("REDIRECT" in flags or "type=5" in summary.lower()):
+            _emit_alert(session, {
+                "type": "icmp_redirect",
+                "src_ip": src_ip or "unknown",
+                "dst_ip": dst_ip or "unknown",
+                "severity": "high",
+                "message": f"ICMP redirect detected from {src_ip} to {dst_ip}",
+                "timestamp": datetime.utcnow().isoformat(),
+            })
 
         broadcast_packet("live", pkt)
 

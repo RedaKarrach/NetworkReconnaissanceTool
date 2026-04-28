@@ -59,7 +59,9 @@ docker-compose up --build
 
 ---
 
-## ÉTAPE 3 — Agent victime (Windows VM)
+## ÉTAPE 3 — Agents VM
+
+### Windows 10 VM
 
 ```powershell
 # 1. Installer Npcap : https://npcap.com
@@ -67,6 +69,31 @@ docker-compose up --build
 pip install scapy requests
 # 3. Lancer (PowerShell Admin)
 python agents/victim_agent.py
+
+# 4. Inventory agent (PowerShell Admin)
+$env:DASHBOARD_URL = "http://192.168.56.1:8000/api/agents/inventory/"
+$env:AGENT_ID = "windows10"
+$env:AGENT_TOKEN = "change-me"
+python agents/inventory_agent.py
+```
+
+### Ubuntu VM
+
+```bash
+# 1. Installer deps
+pip install requests psutil scapy
+
+# 2. Inventory agent (shows as Ubuntu Server in the dashboard)
+export DASHBOARD_URL=http://192.168.56.1:8000/api/agents/inventory/
+export AGENT_ID="ubuntu server"
+export AGENT_TOKEN=change-me
+python3 agents/inventory_agent.py
+
+# 3. Victim / alert agent
+export DASHBOARD_URL=http://192.168.56.1:8000/api/alerts/
+export PACKET_URL=http://192.168.56.1:8000/api/packets/
+export AGENT_NAME=ubuntu-victim
+python3 agents/ubuntu_victim_agent.py
 ```
 
 ---

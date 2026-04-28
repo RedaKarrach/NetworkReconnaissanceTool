@@ -186,8 +186,32 @@ function HostCard({ result }) {
 }
 
 export default function OSFingerprintPanel({ osResults = [], hosts = [] }) {
-  // Merge osResults with host data
-  const combined = osResults.length > 0 ? osResults : hosts.filter((h) => h.os_guess);
+  const combined = React.useMemo(() => {
+    const source = osResults.length > 0 ? osResults : hosts.filter((h) => h.os_guess);
+    const byKey = new Map();
+
+    source.forEach((entry, index) => {
+      const key = String(entry?.ip || entry?.agent_id || entry?.hostname || `row-${index}`).trim();
+      if (!key) return;
+
+      const prev = byKey.get(key);
+      if (!prev) {
+        byKey.set(key, entry);
+        return;
+      }
+
+      const prevTs = Date.parse(prev?.timestamp || prev?.last_seen || 0) || 0;
+      const nextTs = Date.parse(entry?.timestamp || entry?.last_seen || 0) || 0;
+      const prevConf = toPercent(prev?.confidence);
+      const nextConf = toPercent(entry?.confidence);
+
+      if (nextTs > prevTs || nextConf >= prevConf) {
+        byKey.set(key, { ...prev, ...entry });
+      }
+    });
+
+    return Array.from(byKey.values());
+  }, [osResults, hosts]);
 
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -196,7 +220,7 @@ export default function OSFingerprintPanel({ osResults = [], hosts = [] }) {
           No OS data yet — run OS fingerprinting on a host
         </div>
       ) : (
-        combined.map((r, i) => <HostCard key={r.ip || i} result={r} />)
+        combined.map((r, i) => <HostCard key={r.ip || r.agent_id || r.hostname || i} result={r} />)
       )}
     </div>
   );

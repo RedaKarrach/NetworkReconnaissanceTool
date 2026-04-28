@@ -7,10 +7,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useInventory } from "../hooks/useInventory";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
+import PacketInspector from "../components/PacketInspector";
 
 const LIVE_SESSION = "live";
 const MAX_ALERTS = 30;
 const BAR_COUNT = 50;
+const SYN_NOISE_FLOOR_PPS = 1;
+const ONLINE_WINDOW_MS = 300000;
 
 const SEVERITY_STYLE = {
   critical: {
@@ -55,6 +58,7 @@ const RULE_DEFS = [
   { id: "DET-001", key: "syn", name: "SYN flood signature", severity: "critical" },
   { id: "DET-002", key: "arp", name: "ARP spoofing pattern", severity: "high" },
   { id: "DET-003", key: "sweep", name: "Port sweep activity", severity: "medium" },
+  { id: "DET-004", key: "icmp", name: "ICMP redirect observed", severity: "high" },
 ];
 
 function normalizeSeverity(value) {
@@ -93,6 +97,7 @@ function formatTime(value) {
 function mapTypeToRule(type) {
   const t = String(type || "").toLowerCase();
   if (t.includes("arp")) return "arp";
+  if (t.includes("icmp")) return "icmp";
   if (t.includes("sweep") || t.includes("port")) return "sweep";
   return "syn";
 }
@@ -112,36 +117,20 @@ function osEmoji(name) {
   return "❓";
 }
 
-function generateDemoAlert() {
-  const variants = [
-    { type: "syn_flood", severity: "critical", message: "SYN flood threshold breached" },
-    { type: "arp_spoof", severity: "high", message: "ARP cache poisoning signature detected" },
-    { type: "port_sweep", severity: "medium", message: "Sequential port probing observed" },
-    { type: "icmp_redirect", severity: "high", message: "ICMP redirect anomaly observed" },
-  ];
-  const selected = variants[Math.floor(Math.random() * variants.length)];
-  return normalizeAlert({
-    ...selected,
-    src_ip: `172.21.${Math.floor(Math.random() * 254) + 1}.${Math.floor(Math.random() * 254) + 1}`,
-    dst_ip: "192.168.56.20",
-    timestamp: new Date().toISOString(),
-  });
-}
-
 function KpiCard({ title, value, subLabel, valueClass, subLabelClass, flash }) {
   return (
-    <div className="relative overflow-hidden rounded-lg border border-border-default bg-bg-card p-4">
+    <div className="card-premium relative overflow-hidden p-5">
       {flash && (
         <div
           className="absolute inset-0 bg-accent-muted"
           style={{ animation: "fade-in 220ms ease-out reverse" }}
         />
       )}
-      <p className="relative z-10 text-sm text-text-secondary">{title}</p>
+      <p className="relative z-10 text-xs font-semibold tracking-wider text-text-tertiary uppercase">{title}</p>
       <p className={`relative z-10 mt-2 font-mono font-bold leading-none ${valueClass}`} style={{ fontSize: "28px" }}>
         {value}
       </p>
-      <p className={`relative z-10 mt-1 text-sm ${subLabelClass}`}>{subLabel}</p>
+      <p className={`relative z-10 mt-1 text-xs ${subLabelClass}`}>{subLabel}</p>
     </div>
   );
 }
@@ -150,7 +139,7 @@ function AlertRow({ alert, isNewest }) {
   const style = SEVERITY_STYLE[alert.severity] || SEVERITY_STYLE.low;
   return (
     <div
-      className={`group flex items-stretch gap-3 border-b border-border-default px-3 py-3 transition-colors duration-150 hover:bg-bg-card-hover ${isNewest ? "animate-slide-in-top" : ""}`}
+      className={`alert-row-3d group flex items-stretch gap-3 border-b border-border-default/60 px-4 py-3 transition-colors duration-150 hover:bg-bg-card-hover/60 ${isNewest ? "animate-slide-in-top" : ""}`}
     >
       <div className={`${style.bar} rounded-full`} style={{ width: "3px" }} />
       <div className={`mt-1 h-2 w-2 rounded-full ${style.dot}`} />
@@ -162,7 +151,7 @@ function AlertRow({ alert, isNewest }) {
         <p className="text-sm text-text-tertiary">rule: {alert.type}</p>
       </div>
       <div className="ml-2 flex flex-col items-end gap-1">
-        <span className={`rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText} ${style.pulse ? "animate-pulse-critical" : ""}`}>
+        <span className={`alert-badge-3d rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText} ${style.pulse ? "animate-pulse-critical" : ""}`}>
           {alert.severity.toUpperCase()}
         </span>
         <span className="font-mono text-xs text-text-tertiary">{formatTime(alert.timestamp)}</span>
@@ -173,7 +162,7 @@ function AlertRow({ alert, isNewest }) {
 
 function AgentStat({ label, value, valueClass }) {
   return (
-    <div className="rounded-md bg-bg-elevated p-2">
+    <div className="rounded-lg border border-border-default/60 bg-bg-elevated/70 p-2.5">
       <p className="text-xs text-text-secondary">{label}</p>
       <p className={`mt-1 text-md font-semibold ${valueClass}`}>{value}</p>
     </div>
@@ -186,10 +175,8 @@ export default function SOCDashboard() {
   const { items: registryItems } = useAgentRegistry();
   const isWsConnected = ws.status === "connected";
 
-  const [simAlerts, setSimAlerts] = useState([]);
   const [synPps, setSynPps] = useState(0);
   const [synHistory, setSynHistory] = useState(Array(BAR_COUNT).fill(0));
-  const [pktsSent, setPktsSent] = useState(0);
   const [flash, setFlash] = useState({ syn: false, arp: false, alerts: false, agents: false });
 
   const newestAlertKeyRef = useRef("");
@@ -202,10 +189,7 @@ export default function SOCDashboard() {
     return (ws?.alerts || []).map((entry) => normalizeAlert(entry)).slice(0, MAX_ALERTS);
   }, [ws?.alerts]);
 
-  // Final alerts value (real-time or demo)
-  const alerts = useMemo(() => {
-    return isWsConnected ? liveAlerts : simAlerts;
-  }, [isWsConnected, liveAlerts, simAlerts]);
+  const alerts = liveAlerts;
 
   // Live agents (merged from registry + inventory)
   const liveAgents = useMemo(() => {
@@ -247,7 +231,7 @@ export default function SOCDashboard() {
 
     return Array.from(map.values())
       .map((agent) => {
-        const online = agent.lastSeen ? Date.now() - agent.lastSeen.getTime() < 120000 : false;
+        const online = agent.lastSeen ? Date.now() - agent.lastSeen.getTime() < ONLINE_WINDOW_MS : false;
         return { ...agent, online };
       })
       .sort((a, b) => {
@@ -296,6 +280,21 @@ export default function SOCDashboard() {
     return alerts.filter((item) => parseTimestamp(item.timestamp) >= limit).length;
   }, [alerts]);
 
+  const synAlertsLast60 = useMemo(() => {
+    const limit = Date.now() - 60000;
+    return alerts.filter((item) => mapTypeToRule(item.type) === "syn" && parseTimestamp(item.timestamp) >= limit).length;
+  }, [alerts]);
+
+  const packetsObservedLast60 = useMemo(() => {
+    const limit = Date.now() - 60000;
+    return (ws?.packets || []).filter((packet) => {
+      if (!packet?.timestamp) return false;
+      const parsed = Date.parse(packet.timestamp);
+      if (Number.isNaN(parsed)) return false;
+      return parsed >= limit;
+    }).length;
+  }, [ws?.packets]);
+
   // Update newest alert key for animation
   useEffect(() => {
     if (!alerts.length) return;
@@ -309,34 +308,11 @@ export default function SOCDashboard() {
 
   // Sync SYN rate from WebSocket
   useEffect(() => {
-    if (!isWsConnected) return;
-    const next = Math.max(0, Number(ws.pps) || 0);
+    const raw = isWsConnected ? Math.max(0, Number(ws.synPps) || 0) : 0;
+    const next = raw <= SYN_NOISE_FLOOR_PPS ? 0 : raw;
     setSynPps(next);
     setSynHistory((prev) => [...prev.slice(1), next]);
-    setPktsSent((prev) => prev + next);
-  }, [isWsConnected, ws.pps]);
-
-  // Demo mode when WebSocket is not connected
-  useEffect(() => {
-    if (isWsConnected) return;
-
-    const metricsTimer = setInterval(() => {
-      const next = 400 + Math.floor(Math.random() * 600);
-      setSynPps(next);
-      setSynHistory((prev) => [...prev.slice(1), next]);
-      setPktsSent((prev) => prev + next);
-    }, 1000);
-
-    const alertsTimer = setInterval(() => {
-      const nextAlert = generateDemoAlert();
-      setSimAlerts((prev) => [nextAlert, ...prev].slice(0, MAX_ALERTS));
-    }, 4000);
-
-    return () => {
-      clearInterval(metricsTimer);
-      clearInterval(alertsTimer);
-    };
-  }, [isWsConnected]);
+  }, [isWsConnected, ws.synPps]);
 
   // Flash animation on metric changes
   useEffect(() => {
@@ -383,14 +359,14 @@ export default function SOCDashboard() {
   }, [alerts, synPps]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden bg-bg-app text-text-primary">
+    <div className="scene-3d flex h-full min-h-0 flex-col gap-4 overflow-hidden text-text-primary">
       <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard
           title="SYN packets / sec"
           value={synPps}
-          subLabel="↑ SYN flood active"
+          subLabel={synAlertsLast60 > 0 ? `${synAlertsLast60} SYN alerts in last 60s` : "No SYN flood detected"}
           valueClass="text-threat-critical"
-          subLabelClass="text-threat-critical-text"
+          subLabelClass={synAlertsLast60 > 0 ? "text-threat-critical-text" : "text-text-tertiary"}
           flash={flash.syn}
         />
         <KpiCard
@@ -420,35 +396,45 @@ export default function SOCDashboard() {
       </section>
 
       <section className="flex min-h-0 flex-1 gap-3">
-        <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border-default bg-bg-card" style={{ flex: 1.6 }}>
-          <div className="flex items-center border-b border-border-default px-4 py-3">
-            <p className="text-sm font-medium tracking-widest text-text-tertiary">ALERT FEED</p>
-            <div className="ml-auto flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-status-danger animate-pulse-critical" />
-              <span className="font-mono text-sm text-status-danger">live</span>
+        <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1.6 }}>
+          <div className="panel-premium alert-panel-shell flex min-h-0 flex-1 flex-col tilt-3d-soft">
+            <div className="flex items-center border-b border-border-default/60 px-4 py-3">
+              <p className="text-sm font-medium tracking-widest text-text-tertiary">ALERT FEED</p>
+              <div className="ml-auto flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-status-danger animate-pulse-critical" />
+                <span className="font-mono text-sm text-status-danger">live</span>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {alerts.length === 0 ? (
+                <div className="px-4 py-4 text-sm text-text-tertiary">Waiting for alerts...</div>
+              ) : (
+                alerts.slice(0, MAX_ALERTS).map((alert) => {
+                  const key = `${alert.timestamp}-${alert.src_ip}-${alert.type}`;
+                  return <AlertRow key={key} alert={alert} isNewest={key === newestAlertKey} />;
+                })
+              )}
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {alerts.length === 0 ? (
-              <div className="px-4 py-4 text-sm text-text-tertiary">Waiting for alerts...</div>
-            ) : (
-              alerts.slice(0, MAX_ALERTS).map((alert) => {
-                const key = `${alert.timestamp}-${alert.src_ip}-${alert.type}`;
-                return <AlertRow key={key} alert={alert} isNewest={key === newestAlertKey} />;
-              })
-            )}
+          <div className="panel-premium flex min-h-0 flex-col tilt-3d-soft" style={{ height: 320 }}>
+            <PacketInspector
+              packets={ws?.packets || []}
+              pps={ws?.pps || 0}
+              wsStatus={ws?.status || "disconnected"}
+            />
           </div>
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1 }}>
-          <div className="rounded-lg border border-border-default bg-bg-card p-4 shadow-card">
+          <div className="card-premium p-4 tilt-3d-soft">
             <p className="text-sm font-medium tracking-widest text-text-tertiary">LIVE ENDPOINT STATUS</p>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <AgentStat label="Online" value={onlineAgentCount} valueClass="font-mono text-status-success" />
               <AgentStat label="Tracked" value={liveAgents.length} valueClass="font-mono text-accent-primary" />
               <AgentStat label="Alerts / 60s" value={alertsFiredLast60} valueClass="font-mono text-threat-high" />
-              <AgentStat label="Packets observed" value={Math.floor(pktsSent).toLocaleString()} valueClass="font-mono text-text-primary" />
+              <AgentStat label="Packets / 60s" value={packetsObservedLast60.toLocaleString()} valueClass="font-mono text-text-primary" />
             </div>
 
             <div className="mt-3 space-y-2">
@@ -456,7 +442,7 @@ export default function SOCDashboard() {
                 <div className="rounded-md bg-bg-elevated px-3 py-2 text-sm text-text-tertiary">No registered or inventory agents yet.</div>
               ) : (
                 liveAgents.slice(0, 5).map((agent) => (
-                  <div key={agent.agentId} className="flex items-center gap-2 rounded-md bg-bg-elevated px-3 py-2">
+                  <div key={agent.agentId} className="agent-chip flex items-center gap-2">
                     <span className={`h-2 w-2 rounded-full ${agent.online ? "bg-status-success" : "bg-status-offline"}`} />
                     <span className="text-sm">{osEmoji(agent.os)}</span>
                     <span className="flex-1 truncate text-sm text-text-primary">
@@ -469,7 +455,7 @@ export default function SOCDashboard() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-border-default bg-bg-card p-4 shadow-card">
+          <div className="card-premium p-4 tilt-3d-soft">
             <p className="text-sm font-medium tracking-widest text-text-tertiary">HOT TARGETS</p>
             <div className="mt-3 space-y-2">
               {hotTargets.length === 0 ? (
@@ -478,7 +464,7 @@ export default function SOCDashboard() {
                 hotTargets.map((target) => {
                   const style = SEVERITY_STYLE[target.severity] || SEVERITY_STYLE.low;
                   return (
-                    <div key={target.ip} className="flex items-center gap-2 rounded-md bg-bg-elevated px-3 py-2">
+                    <div key={target.ip} className="agent-chip flex items-center gap-2">
                       <span className={`h-2 w-2 rounded-full ${style.dot}`} />
                       <span className="flex-1 font-mono text-sm text-text-primary">{target.ip}</span>
                       <span className={`rounded-sm border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText}`}>
@@ -492,14 +478,14 @@ export default function SOCDashboard() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-border-default bg-bg-card p-4 shadow-card">
+          <div className="card-premium p-4 tilt-3d-soft">
             <p className="text-sm font-medium tracking-widest text-text-tertiary">SYN RATE (60S)</p>
             <div className="mt-3 flex h-24 items-end gap-px">
               {synHistory.map((value, index) => {
                 const isAttack = value >= 700;
                 const height = Math.max(2, Math.round((value / maxBar) * 100));
                 return (
-                  <div key={`${index}-${value}`} className="flex-1">
+                  <div key={`${index}-${value}`} className="flex-1 depth-float" style={{ animationDelay: `${index * 90}ms` }}>
                     <div
                       className={`w-full rounded-sm transition-all duration-150 ${isAttack ? "bg-threat-critical/70" : "bg-bg-elevated"}`}
                       style={{ height: `${height}%` }}
@@ -517,11 +503,11 @@ export default function SOCDashboard() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-border-default bg-bg-card p-4 shadow-card">
+          <div className="card-premium p-4 tilt-3d-soft">
             <p className="text-sm font-medium tracking-widest text-text-tertiary">DETECTION RULES FIRED</p>
             <div className="mt-3 space-y-3">
               {detectionRows.map((row) => (
-                <div key={row.id} className="flex items-center gap-2">
+                <div key={row.id} className="agent-chip flex items-center gap-2">
                   <span className="rounded-sm bg-bg-elevated px-2 py-0.5 font-mono text-xs text-accent-primary">{row.id}</span>
                   <p className="flex-1 text-sm text-text-secondary">{row.name}</p>
                   <div className="flex items-end gap-px">
