@@ -138,7 +138,7 @@ def _block_ip(ip, reason, now=None):
         print(f"  [ERR] Failed to block {ip}: {e}")
         return False
 
-
+    
 # ─────────────────────────────────────────────────────────────────────────────
 
 def on_packet(pkt):

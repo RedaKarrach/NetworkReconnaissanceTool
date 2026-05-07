@@ -261,6 +261,8 @@ function ScanCard({
   onLaunch,
   onStop,
   disabled,
+  hint,
+  busyLabel,
 }) {
   return (
     <div className="group/card card-premium-interactive overflow-hidden flex flex-col transition-all duration-300 animate-slide-in-bottom hover:elevation-3">
@@ -353,20 +355,26 @@ function ScanCard({
             />
 
             <span className="relative flex items-center justify-center gap-2 text-text-primary">
-              Launch Scan
+              {busyLabel || "Launch Scan"}
               <svg className="h-4 w-4 transition-transform duration-300 group-hover/btn:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
             </span>
           </button>
         )}
+
+        {hint ? (
+          <div className="mt-3 rounded-md border border-border-default/60 bg-bg-elevated/60 px-3 py-2 text-xs text-text-tertiary">
+            {hint}
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
 export default function Dashboard({ onSessionStart }) {
-  const { startHostDiscovery, startPortScan, startOsFingerprint, stopThread, loading, error } = useScan();
+  const { startHostDiscovery, startPortScan, startOsFingerprint, stopThread, getThreads, loading, error } = useScan();
   const { items: inventoryItems } = useInventory();
   const { items: registryItems } = useAgentRegistry();
 
@@ -382,28 +390,71 @@ export default function Dashboard({ onSessionStart }) {
 
   const [runningScanType, setRunningScanType] = useState(null);
   const [completedScanType, setCompletedScanType] = useState(null);
+  const [launchingType, setLaunchingType] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const scanTypeMap = {
+      host_discovery: "discovery",
+      port_scan: "port",
+      os_fingerprint: "fingerprint",
+    };
+
+    async function restoreActiveScan() {
+      const result = await getThreads();
+      const items = Array.isArray(result?.items) ? result.items : [];
+      const activeScan = items.find((item) => item?.alive && item?.meta?.kind === "scan");
+      if (!mounted || !activeScan) return;
+
+      const restoredType = scanTypeMap[activeScan.meta.scan_type] || null;
+      if (!restoredType) return;
+
+      setSessionId(activeScan.meta.session_id || null);
+      setThreadId(activeScan.thread_id || null);
+      setRunningScanType(restoredType);
+      if (onSessionStart && activeScan.meta.session_id) {
+        onSessionStart(activeScan.meta.session_id);
+      }
+    }
+
+    restoreActiveScan();
+    return () => {
+      mounted = false;
+    };
+  }, [getThreads, onSessionStart]);
 
   const ws = useWebSocket(sessionId);
 
   const endpointHosts = useMemo(() => {
+    const byKey = new Map();
     const byIp = new Map();
-    const byAgent = new Map();
     const cloneIdentity = new Set();
     const hasRegistry = Array.isArray(registryItems) && registryItems.length > 0;
+
+    const addEndpoint = (endpoint) => {
+      const key = normalizeToken(endpoint.agent_id || endpoint.hostname || endpoint.ip);
+      if (key && byKey.has(key)) return byKey.get(key);
+
+      if (key) byKey.set(key, endpoint);
+      if (!byIp.has(endpoint.ip)) byIp.set(endpoint.ip, []);
+      byIp.get(endpoint.ip).push(endpoint);
+      return endpoint;
+    };
 
     // Seed with registered endpoints only.
     (registryItems || []).forEach((item) => {
       const ip = normalizeIp(item?.ip);
-      if (!isUsableEndpointIp(ip) || byIp.has(ip)) return;
+      if (!isUsableEndpointIp(ip)) return;
 
       const agentKey = normalizeToken(item?.agent_id || item?.hostname || ip);
-      if (agentKey && byAgent.has(agentKey)) return;
+      if (agentKey && byKey.has(agentKey)) return;
 
       const identityKey = `${normalizeToken(item?.hostname)}|${normalizeToken(item?.os_name)}`;
       if (identityKey !== "|" && cloneIdentity.has(identityKey)) return;
       cloneIdentity.add(identityKey);
 
-      const endpoint = {
+      const endpoint = addEndpoint({
         ip,
         agent_id: item.agent_id || ip,
         hostname: item.hostname || "--",
@@ -414,45 +465,36 @@ export default function Dashboard({ onSessionStart }) {
         open_port_details: [],
         source_tags: new Set(["registry"]),
         last_seen: null,
-      };
+      });
 
-      byIp.set(ip, endpoint);
-      if (agentKey) byAgent.set(agentKey, endpoint);
+      if (agentKey) byKey.set(agentKey, endpoint);
     });
 
     (inventoryItems || []).forEach((item) => {
       const agentKey = normalizeToken(item?.agent_id || item?.hostname);
-      let endpoint = agentKey ? byAgent.get(agentKey) : null;
+      let endpoint = agentKey ? byKey.get(agentKey) : null;
 
       if (!endpoint) {
-        const ips = Array.isArray(item?.ips) ? item.ips : [];
-        for (const rawIp of ips) {
-          const ip = normalizeIp(rawIp);
-          if (!isUsableEndpointIp(ip)) continue;
-          endpoint = byIp.get(ip);
-          if (endpoint) break;
-        }
-      }
-
-      if (!endpoint && !hasRegistry) {
         const ip = pickPrimaryEndpointIp(item?.ips);
-        if (!ip || byIp.has(ip)) return;
+        if (!ip) return;
+        const matches = byIp.get(ip) || [];
+        endpoint = agentKey ? null : matches[0] || null;
 
-        endpoint = {
-          ip,
-          agent_id: item.agent_id || ip,
-          hostname: item.hostname || "--",
-          mac: (Array.isArray(item.macs) && item.macs[0]) || "--",
-          os_guess: [item.os_name, item.os_version].filter(Boolean).join(" ") || "unknown",
-          confidence: 0,
-          open_ports: Array.isArray(item.open_ports) ? item.open_ports : [],
-          open_port_details: [],
-          source_tags: new Set(["inventory"]),
-          last_seen: item.last_seen || null,
-        };
-
-        byIp.set(ip, endpoint);
-        if (agentKey) byAgent.set(agentKey, endpoint);
+        if (!endpoint) {
+          endpoint = addEndpoint({
+            ip,
+            agent_id: item.agent_id || ip,
+            hostname: item.hostname || "--",
+            mac: (Array.isArray(item.macs) && item.macs[0]) || "--",
+            os_guess: [item.os_name, item.os_version].filter(Boolean).join(" ") || "unknown",
+            confidence: 0,
+            open_ports: Array.isArray(item.open_ports) ? item.open_ports : [],
+            open_port_details: [],
+            source_tags: new Set(["inventory"]),
+            last_seen: item.last_seen || null,
+          });
+          if (agentKey) byKey.set(agentKey, endpoint);
+        }
       }
 
       if (!endpoint) return;
@@ -467,44 +509,48 @@ export default function Dashboard({ onSessionStart }) {
     (ws.hosts || []).forEach((host) => {
       const ip = normalizeIp(host?.ip);
       if (!isUsableEndpointIp(ip)) return;
-      const endpoint = byIp.get(ip);
-      if (!endpoint) return;
-      endpoint.hostname = host.hostname || endpoint.hostname;
-      endpoint.mac = host.mac || endpoint.mac;
-      endpoint.os_guess = host.os_guess || endpoint.os_guess;
-      endpoint.source_tags.add("discovery");
+      const targets = byIp.get(ip) || [];
+      targets.forEach((endpoint) => {
+        endpoint.hostname = host.hostname || endpoint.hostname;
+        endpoint.mac = host.mac || endpoint.mac;
+        endpoint.os_guess = host.os_guess || endpoint.os_guess;
+        endpoint.source_tags.add("discovery");
+      });
     });
 
     (ws.osResults || []).forEach((result) => {
       const ip = normalizeIp(result?.ip);
       if (!isUsableEndpointIp(ip)) return;
-      const endpoint = byIp.get(ip);
-      if (!endpoint) return;
-      endpoint.os_guess = result.os_guess || endpoint.os_guess;
-      endpoint.confidence = toUnitConfidence(result.confidence ?? endpoint.confidence);
-      endpoint.source_tags.add("fingerprint");
+      const targets = byIp.get(ip) || [];
+      targets.forEach((endpoint) => {
+        endpoint.os_guess = result.os_guess || endpoint.os_guess;
+        endpoint.confidence = toUnitConfidence(result.confidence ?? endpoint.confidence);
+        endpoint.source_tags.add("fingerprint");
+      });
     });
 
     (ws.portResults || []).forEach((result) => {
       const ip = normalizeIp(result?.ip);
       if (!isUsableEndpointIp(ip)) return;
-      const endpoint = byIp.get(ip);
-      if (!endpoint) return;
+      const targets = byIp.get(ip) || [];
+      if (!targets.length) return;
       const status = String(result?.status || "").toLowerCase();
-      if (status === "open" && Number.isInteger(Number(result.port))) {
-        endpoint.open_ports.push(Number(result.port));
-        endpoint.open_port_details.push({
-          port: Number(result.port),
-          protocol: result.protocol || "tcp",
-          status,
-          banner: result.banner || "",
-          timestamp: result.timestamp,
-        });
-      }
-      endpoint.source_tags.add("portscan");
+      targets.forEach((endpoint) => {
+        if (status === "open" && Number.isInteger(Number(result.port))) {
+          endpoint.open_ports.push(Number(result.port));
+          endpoint.open_port_details.push({
+            port: Number(result.port),
+            protocol: result.protocol || "tcp",
+            status,
+            banner: result.banner || "",
+            timestamp: result.timestamp,
+          });
+        }
+        endpoint.source_tags.add("portscan");
+      });
     });
 
-    return Array.from(byIp.values())
+    return Array.from(byKey.values())
       .map((endpoint) => ({
         ...endpoint,
         open_ports: Array.from(new Set(endpoint.open_ports)).sort((a, b) => a - b),
@@ -526,7 +572,7 @@ export default function Dashboard({ onSessionStart }) {
 
   const selectedEndpoint = useMemo(() => {
     if (!selectedEndpointIp) return endpointHosts[0] || null;
-    return endpointHosts.find((endpoint) => endpoint.ip === selectedEndpointIp) || endpointHosts[0] || null;
+    return endpointHosts.find((endpoint) => endpoint.ip === selectedEndpointIp) || null;
   }, [endpointHosts, selectedEndpointIp]);
 
   useEffect(() => {
@@ -555,16 +601,20 @@ export default function Dashboard({ onSessionStart }) {
 
     setCompletedScanType(null);
     setRunningScanType(type);
+    setLaunchingType(type);
 
     const result = await action();
     if (!result || !result.session_id) {
       setRunningScanType(null);
-      return;
+      setLaunchingType(null);
+      return null;
     }
 
     setSessionId(result.session_id);
     setThreadId(result.thread_id || null);
     if (onSessionStart) onSessionStart(result.session_id);
+    setLaunchingType(null);
+    return result;
   }
 
   async function stopAllScans() {
@@ -577,6 +627,7 @@ export default function Dashboard({ onSessionStart }) {
     }
     setRunningScanType(null);
     setThreadId(null);
+    setLaunchingType(null);
   }
 
   async function handleHostDiscovery() {
@@ -586,12 +637,14 @@ export default function Dashboard({ onSessionStart }) {
   async function handlePortScan() {
     const parsedPorts = parsePorts(ports);
     if (!scanIp || parsedPorts.length === 0) return;
-    await launchScan("port", () => startPortScan(scanIp, parsedPorts, protocol));
+    const result = await launchScan("port", () => startPortScan(scanIp, parsedPorts, protocol));
+    if (result) setSelectedEndpointIp(scanIp);
   }
 
   async function handleFingerprint() {
     if (!fpIp) return;
-    await launchScan("fingerprint", () => startOsFingerprint(fpIp));
+    const result = await launchScan("fingerprint", () => startOsFingerprint(fpIp));
+    if (result) setSelectedEndpointIp(fpIp);
   }
 
   const sessionPreview = sessionId
@@ -599,6 +652,24 @@ export default function Dashboard({ onSessionStart }) {
     : "";
 
   const isSessionRunning = Boolean(runningScanType && sessionId);
+
+  const scanHint = useMemo(() => {
+    if (!error) return "";
+    const message = String(error).toLowerCase();
+    if (message.includes("ip not in allowed subnet")) {
+      return "Target IP is outside the allowed subnet (SCAN_ALLOWED_SUBNET).";
+    }
+    if (message.includes("ip unreachable")) {
+      return "Target did not respond to ping; ensure inventory/registry is online or adjust firewall.";
+    }
+    if (message.includes("subnet required")) {
+      return "Subnet is required (example: 192.168.56.0/24).";
+    }
+    if (message.includes("ip required")) {
+      return "Target IP is required.";
+    }
+    return "";
+  }, [error]);
 
   return (
     <div className="scene-3d flex h-full min-h-0 flex-col gap-6">
@@ -614,7 +685,9 @@ export default function Dashboard({ onSessionStart }) {
           idleButtonClass="bg-gradient-to-r from-status-success to-status-online"
           onLaunch={handleHostDiscovery}
           onStop={stopAllScans}
-          disabled={loading || Boolean(runningScanType)}
+          disabled={Boolean(runningScanType)}
+          hint={scanHint}
+          busyLabel={launchingType === "discovery" ? "Launching..." : ""}
         >
           <div>
             <label className="mb-2.5 block text-sm font-semibold text-text-primary">Subnet</label>
@@ -638,7 +711,9 @@ export default function Dashboard({ onSessionStart }) {
           idleButtonClass="bg-gradient-to-r from-accent-hover to-accent-primary"
           onLaunch={handlePortScan}
           onStop={stopAllScans}
-          disabled={loading || Boolean(runningScanType) || !scanIp}
+          disabled={Boolean(runningScanType) || !scanIp}
+          hint={scanHint}
+          busyLabel={launchingType === "port" ? "Launching..." : ""}
         >
           <div>
             <label className="mb-2.5 block text-sm font-semibold text-text-primary">Target IP</label>
@@ -693,7 +768,9 @@ export default function Dashboard({ onSessionStart }) {
           idleButtonClass="bg-gradient-to-r from-os-macos to-accent-primary"
           onLaunch={handleFingerprint}
           onStop={stopAllScans}
-          disabled={loading || Boolean(runningScanType) || !fpIp}
+          disabled={Boolean(runningScanType) || !fpIp}
+          hint={scanHint}
+          busyLabel={launchingType === "fingerprint" ? "Launching..." : ""}
         >
           <div>
             <label className="mb-2.5 block text-sm font-semibold text-text-primary">Target IP</label>

@@ -39,13 +39,22 @@ function protoColor(proto) {
   return PROTO_COLOR[proto?.toUpperCase()] || "text-text-tertiary";
 }
 
+function formatPacketTime(timestamp) {
+  if (!timestamp) return "--";
+  const ts = Date.parse(timestamp);
+  if (Number.isNaN(ts)) return "--";
+  const date = new Date(ts);
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mins = String(date.getMinutes()).padStart(2, "0");
+  // Always show full date and hour:minute (YYYY-MM-DD HH:MM)
+  return `${yyyy}-${mm}-${dd} ${hh}:${mins}`;
+}
+
 function PacketRow({ pkt, idx }) {
-  const ts = pkt.timestamp
-    ? new Date(pkt.timestamp).toLocaleTimeString("en-US", {
-        hour12: false,
-        fractionalSecondDigits: 2,
-      })
-    : "";
+  const packetTime = formatPacketTime(pkt.timestamp);
 
   const proto = String(pkt.protocol || "").toUpperCase();
   const flags = String(pkt.flags || "").toUpperCase().split(/[\s,|]+/).filter(Boolean).slice(0, 3);
@@ -57,7 +66,7 @@ function PacketRow({ pkt, idx }) {
       }`}
     >
       {/* Timestamp */}
-      <span className="w-16 flex-shrink-0 font-mono text-xs text-text-tertiary">{ts}</span>
+      <span className="w-20 flex-shrink-0 font-mono text-xs text-text-tertiary">{packetTime}</span>
 
       {/* Protocol */}
       <span className={`w-8 flex-shrink-0 font-mono text-xs font-bold ${protoColor(proto)}`}>
@@ -92,6 +101,16 @@ function PacketRow({ pkt, idx }) {
       {/* Summary */}
       <span className="ml-1 flex-1 truncate text-xs text-text-tertiary">
         {pkt.summary || pkt.message || ""}
+        {pkt.attacker_ip ? (
+          <span className="ml-3 inline-block rounded-sm bg-threat-high/10 px-2 py-0.5 text-xs text-threat-high">
+            Attacker: {pkt.attacker_ip}
+          </span>
+        ) : null}
+        {pkt.protocol === "ALERT" && (
+          <span className="ml-2 inline-block rounded-sm bg-threat-critical/10 px-2 py-0.5 text-xs text-threat-critical">
+            anomalous
+          </span>
+        )}
       </span>
     </div>
   );
@@ -100,6 +119,7 @@ function PacketRow({ pkt, idx }) {
 export default function PacketInspector({ packets = [], pps = 0, wsStatus = "disconnected" }) {
   const bottomRef = useRef(null);
   const [paused, setPaused] = useState(false);
+  const [pausedSnapshot, setPausedSnapshot] = useState(null);
   const [filter, setFilter] = useState("");
   const [maxLines, setMaxLines] = useState(200);
   const [isAutoScrolling, setIsAutoScrolling] = useState(true);
@@ -110,13 +130,22 @@ export default function PacketInspector({ packets = [], pps = 0, wsStatus = "dis
     setIsAutoScrolling(false);
   }, [packets, paused]);
 
+  useEffect(() => {
+    if (paused) {
+      setPausedSnapshot(packets);
+    } else {
+      setPausedSnapshot(null);
+    }
+  }, [paused, packets]);
+
   function onScroll(event) {
     const element = event.currentTarget;
     const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 4;
     setIsAutoScrolling(nearBottom);
   }
 
-  const filtered = packets
+  const sourcePackets = paused ? (pausedSnapshot || []) : packets;
+  const filtered = sourcePackets
     .filter((p) => {
       if (!filter) return true;
       const hay = JSON.stringify(p).toLowerCase();
@@ -174,7 +203,7 @@ export default function PacketInspector({ packets = [], pps = 0, wsStatus = "dis
 
       {/* Column headers */}
       <div className="flex flex-shrink-0 gap-2 border-b border-border-default bg-bg-elevated/50 px-3 py-1.5 text-xs uppercase text-text-tertiary">
-        <span className="w-16">Time</span>
+        <span className="w-20">Time</span>
         <span className="w-8">Proto</span>
         <span className="w-12">Flags</span>
         <span className="w-10">TTL</span>
@@ -186,7 +215,7 @@ export default function PacketInspector({ packets = [], pps = 0, wsStatus = "dis
       <div className="flex-1 overflow-y-auto" onScroll={onScroll}>
         {filtered.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
-            {packets.length === 0
+            {sourcePackets.length === 0
               ? "Waiting for packets…"
               : `No packets match "${filter}"`}
           </div>

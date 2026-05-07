@@ -1,0 +1,28 @@
+# Python
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Node / frontend
+recon-tool/frontend/node_modules/
+recon-tool/frontend/build/
+recon-tool/frontend/.cache/
+recon-tool/frontend/dist/
+
+# Ignore built frontend assets
+recon-tool/frontend/build/static/
+
+# Ignore local environment files
+.env
+.env.*
+
+# Ignore virtual env
+.venv/
+
+# Ignore OS files
+Thumbs.db
+.DS_Store
+
+# Ignore embedded repo if present
+NetworkReconnaissanceTool/

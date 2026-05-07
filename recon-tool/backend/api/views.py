@@ -11,7 +11,7 @@ import platform
 import subprocess
 import ipaddress
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -19,7 +19,7 @@ from rest_framework import status
 from django.conf import settings
 
 from models import ScanSession, Host, PortResult, Alert, PacketLog, AttackLog, HostInventory, AgentRegistry
-from threads.manager import start_thread, stop_thread, get_status
+from threads.manager import start_thread, stop_thread, get_status, list_threads, cleanup_dead_threads
 from websockets.consumers import broadcast_packet, broadcast_alert, broadcast_status, broadcast_inventory
 
 # Import scanner modules
@@ -39,10 +39,19 @@ from django.http import HttpResponse
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Helpers & Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-PACKET_LOG_CAP = 5000
+# Storage caps to prevent unbounded growth and memory bloat
+PACKET_LOG_CAP = 2000        # Limit to 2K packets per session (reduced from 5K for stability)
+ALERT_LOG_CAP = 500          # Limit to 500 alerts per session
+INVENTORY_RETENTION = 86400  # Keep inventory entries for 24 hours
+AGENT_OFFLINE_THRESHOLD = 300  # seconds without inventory before marking offline
+
+# Rate limiting for packet flood attacks (prevent DOS from overwhelming backend)
+_packet_rate_limit = {}  # {session_id: (count, last_reset_time)}
+PACKET_RATE_WINDOW = 1.0  # Rate-limit window in seconds
+PACKET_RATE_LIMIT = 100   # Max packets per second per session (higher limit; can be tuned)
 
 def _new_session(subnet=""):
     sid = str(uuid.uuid4())
@@ -79,14 +88,59 @@ def _trim_packet_logs(session):
         pass
 
 
+def _trim_alert_logs(session):
+    """Keep alert logs bounded per session."""
+    try:
+        total = Alert.objects(session=session).count()
+        if total <= ALERT_LOG_CAP:
+            return
+        excess = total - ALERT_LOG_CAP
+        Alert.objects(session=session).order_by("timestamp").limit(excess).delete()
+    except Exception:
+        pass
+
+
+def _check_packet_rate_limit(session_id):
+    """Simple per-session rate limiter for packet POSTs. Returns True if allowed, False if rate-limited."""
+    import time
+    now = time.time()
+    if session_id not in _packet_rate_limit:
+        _packet_rate_limit[session_id] = [0, now]
+    count, last_reset = _packet_rate_limit[session_id]
+    if now - last_reset >= PACKET_RATE_WINDOW:
+        _packet_rate_limit[session_id] = [1, now]
+        return True
+    count += 1
+    _packet_rate_limit[session_id][0] = count
+    return count <= PACKET_RATE_LIMIT
+
+
 def _emit_alert(session, alert_dict):
-    """Broadcast alert to session and live SOC stream."""
+    """Broadcast alert to session and live SOC stream, with trimming."""
     payload = {
         "event_type": "alert",
         **alert_dict,
     }
     broadcast_alert(session.session_id, payload)
     broadcast_alert("live", payload)
+    # Also broadcast a packet-like event so alerts appear in the packet inspector
+    try:
+        pkt_like = {
+            "event_type": "packet",
+            "summary": alert_dict.get("message", ""),
+            "flags": alert_dict.get("type", "ALERT").upper(),
+            "ttl": 0,
+            "src_ip": alert_dict.get("src_ip") or alert_dict.get("agent") or "",
+            "dst_ip": alert_dict.get("dst_ip", ""),
+            "protocol": "ALERT",
+            "timestamp": alert_dict.get("timestamp") or datetime.utcnow().isoformat(),
+        }
+        broadcast_packet(session.session_id, pkt_like)
+        broadcast_packet("live", pkt_like)
+    except Exception:
+        pass
+
+    _trim_alert_logs(session)
 
 
 def _get_live_session():
@@ -107,6 +161,14 @@ def _check_agent_token(request):
     auth_header = request.headers.get("Authorization", "")
     bearer_token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
     return header_token == expected or bearer_token == expected
+
+
+def _request_client_ip(request):
+    """Best-effort client IP extraction behind reverse proxies."""
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",", 1)[0].strip()
+    return request.META.get("REMOTE_ADDR", "")
 
 
 def _is_ip_reachable(ip: str) -> bool:
@@ -156,6 +218,76 @@ def _is_ip_allowed(ip: str) -> bool:
         return False
 
 
+def _normalize_agent_inventory_state(agent_id: str, now: datetime = None):
+    """Sync registry health with the latest inventory snapshot and emit transitions."""
+    now = now or datetime.utcnow()
+    inventory = HostInventory.objects(agent_id=agent_id).first()
+    registry = AgentRegistry.objects(agent_id=agent_id).first()
+    if not registry:
+        return None
+
+    last_seen = inventory.last_seen if inventory else registry.last_seen
+    if not last_seen:
+        registry.health_status = registry.health_status or "unknown"
+        registry.health_notified_at = now
+        registry.save()
+        return {
+            "agent_id": agent_id,
+            "hostname": registry.hostname,
+            "ip": registry.ip,
+            "os_name": registry.os_name,
+            "last_seen": None,
+            "health_status": registry.health_status or "unknown",
+            "online": False,
+            "offline_for_sec": None,
+        }
+
+    age_seconds = (now - last_seen).total_seconds()
+    is_online = age_seconds <= AGENT_OFFLINE_THRESHOLD
+    next_status = "online" if is_online else "offline"
+    previous_status = registry.health_status or "unknown"
+
+    registry.last_seen = last_seen
+    registry.health_status = next_status
+    registry.save()
+
+    if previous_status != next_status:
+        live_session = _get_live_session()
+        if next_status == "online":
+            _emit_alert(live_session, {
+                "agent": agent_id,
+                "type": "agent_online",
+                "src_ip": registry.ip or "unknown",
+                "dst_ip": "dashboard",
+                "severity": "low",
+                "message": f"Agent {agent_id} is online ({registry.os_name or 'unknown OS'})",
+                "timestamp": now.isoformat(),
+            })
+        else:
+            _emit_alert(live_session, {
+                "agent": agent_id,
+                "type": "agent_offline",
+                "src_ip": registry.ip or "unknown",
+                "dst_ip": "dashboard",
+                "severity": "medium",
+                "message": f"Agent {agent_id} has been offline for {int(age_seconds)}s",
+                "timestamp": now.isoformat(),
+            })
+
+    registry.health_notified_at = now
+    registry.save()
+    return {
+        "agent_id": agent_id,
+        "hostname": registry.hostname,
+        "ip": registry.ip,
+        "os_name": registry.os_name,
+        "last_seen": last_seen.isoformat(),
+        "health_status": next_status,
+        "online": is_online,
+        "offline_for_sec": max(0, int(age_seconds)) if not is_online else 0,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Host Discovery
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,7 +334,11 @@ class HostDiscoveryView(APIView):
                 "timestamp": datetime.utcnow().isoformat(),
             })
 
-        thread_id = start_thread(target=_run, name=f"discovery-{session_id}")
+        thread_id = start_thread(
+            target=_run,
+            name=f"discovery-{session_id}",
+            meta={"kind": "scan", "scan_type": "host_discovery", "session_id": session_id, "target": subnet},
+        )
 
         _emit_alert(session, {
             "type": "host_discovery_start",
@@ -239,6 +375,10 @@ class PortScanView(APIView):
         if not _is_ip_allowed(ip):
             return Response({"error": "ip not in allowed subnet"}, status=400)
 
+        # Fail fast for dead targets, but allow known inventory/registry IPs when ICMP is blocked.
+        if not (_is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)):
+            return Response({"error": "ip unreachable"}, status=404)
+
         session, session_id = _new_session()
 
         # Find or create a Host record for this IP
@@ -262,6 +402,10 @@ class PortScanView(APIView):
                     "port": res["port"],
                     "status": res["status"],
                     "banner": res.get("banner", ""),
+                    "service": res.get("service", ""),
+                    "reason": res.get("reason", ""),
+                    "method": res.get("method", ""),
+                    "rtt_ms": res.get("rtt_ms"),
                     "timestamp": datetime.utcnow().isoformat()
                 }
                 broadcast_packet(session_id, packet)
@@ -288,7 +432,11 @@ class PortScanView(APIView):
                 "timestamp": datetime.utcnow().isoformat(),
             })
 
-        thread_id = start_thread(target=_run, name=f"portscan-{ip}")
+        thread_id = start_thread(
+            target=_run,
+            name=f"portscan-{ip}",
+            meta={"kind": "scan", "scan_type": "port_scan", "session_id": session_id, "target": ip},
+        )
 
         _emit_alert(session, {
             "type": "port_scan_start",
@@ -334,6 +482,10 @@ class OSFingerprintView(APIView):
         if not _is_ip_allowed(ip):
             return Response({"error": "ip not in allowed subnet"}, status=400)
 
+        # OS fingerprinting only makes sense for a live target.
+        if not (_is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)):
+            return Response({"error": "ip unreachable"}, status=404)
+
         session, session_id = _new_session()
 
         def _run(stop_flag):
@@ -377,7 +529,11 @@ class OSFingerprintView(APIView):
                 "timestamp": datetime.utcnow().isoformat(),
             })
 
-        thread_id = start_thread(target=_run, name=f"osfp-{ip}")
+        thread_id = start_thread(
+            target=_run,
+            name=f"osfp-{ip}",
+            meta={"kind": "scan", "scan_type": "os_fingerprint", "session_id": session_id, "target": ip},
+        )
 
         _emit_alert(session, {
             "type": "os_fingerprint_start",
@@ -434,11 +590,15 @@ class ARPSpoofView(APIView):
             broadcast_status(session_id, "stopped",
                              {"message": "ARP spoof stopped"})
 
-        thread_id = start_thread(target=_run, name=f"arp-spoof-{target_ip}")
+        thread_id = start_thread(
+            target=_run,
+            name=f"arp-spoof-{target_ip}",
+            meta={"kind": "attack", "attack_type": "arp_spoof", "session_id": session_id, "target": target_ip},
+        )
 
         _emit_alert(session, {
             "type": "arp_spoof",
-            "src_ip": "attacker",
+            "src_ip": _request_client_ip(request) or "attacker",
             "dst_ip": target_ip,
             "severity": "high",
             "message": f"ARP spoof started against {target_ip} via {gateway_ip}",
@@ -492,11 +652,15 @@ class SYNFloodView(APIView):
             broadcast_status(session_id, "stopped",
                              {"message": "SYN flood stopped"})
 
-        thread_id = start_thread(target=_run, name=f"syn-flood-{target_ip}")
+        thread_id = start_thread(
+            target=_run,
+            name=f"syn-flood-{target_ip}",
+            meta={"kind": "attack", "attack_type": "syn_flood", "session_id": session_id, "target": target_ip},
+        )
 
         _emit_alert(session, {
             "type": "syn_flood",
-            "src_ip": "spoofed",
+            "src_ip": _request_client_ip(request) or "attacker",
             "dst_ip": target_ip,
             "severity": "critical",
             "message": f"SYN flood started against {target_ip}:{target_port}",
@@ -559,7 +723,11 @@ class ICMPRedirectView(APIView):
             attack_log.save()
             broadcast_status(session_id, "stopped", {"message": "ICMP redirect stopped"})
 
-        thread_id = start_thread(target=_run, name=f"icmp-redirect-{target_ip}")
+        thread_id = start_thread(
+            target=_run,
+            name=f"icmp-redirect-{target_ip}",
+            meta={"kind": "attack", "attack_type": "icmp_redirect", "session_id": session_id, "target": target_ip},
+        )
 
         _emit_alert(session, {
             "type": "icmp_redirect",
@@ -600,6 +768,34 @@ class StopThreadView(APIView):
         })
 
 
+class ThreadRegistryView(APIView):
+    """GET /api/threads/ -> list active/recent background threads."""
+
+    def get(self, request):
+        cleanup_dead_threads()
+        items = list_threads()
+        payload = []
+        for item in items:
+            payload.append({
+                "thread_id": item.get("thread_id"),
+                "name": item.get("name"),
+                "alive": bool(item.get("alive")),
+                "status": item.get("status"),
+                "meta": item.get("meta", {}),
+            })
+        return Response({"items": payload})
+
+
+class ThreadStatusView(APIView):
+    """GET /api/threads/<thread_id>/ -> status for one background thread."""
+
+    def get(self, request, thread_id):
+        item = get_status(thread_id)
+        if not item:
+            return Response({"error": "thread not found"}, status=404)
+        return Response(item)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6b. Agent inventory ingestion
 # ─────────────────────────────────────────────────────────────────────────────
@@ -616,12 +812,15 @@ class InventoryIngestView(APIView):
         if not agent_id:
             return Response({"error": "agent_id or hostname required"}, status=400)
 
+        now = datetime.utcnow()
+
         def _limit_list(value, max_items=200):
             if not isinstance(value, list):
                 return []
             return value[:max_items]
 
         inventory = HostInventory.objects(agent_id=agent_id).first()
+        is_new_inventory = inventory is None
         if not inventory:
             inventory = HostInventory(agent_id=agent_id)
 
@@ -644,26 +843,61 @@ class InventoryIngestView(APIView):
         inventory.packages     = _limit_list(data.get("packages"), 500)
         inventory.services     = _limit_list(data.get("services"), 300)
         inventory.open_ports   = _limit_list(data.get("open_ports"), 200)
-        inventory.last_seen    = datetime.utcnow()
+        inventory.last_seen    = now
         inventory.save()
+
+        primary_ip = ""
+        if isinstance(inventory.ips, list) and inventory.ips:
+            primary_ip = inventory.ips[0]
+
+        registry = AgentRegistry.objects(agent_id=agent_id).first()
+        if not registry:
+            registry = AgentRegistry(agent_id=agent_id)
+        registry.hostname = inventory.hostname or registry.hostname
+        registry.ip = primary_ip or registry.ip
+        registry.os_name = inventory.os_name or registry.os_name
+        registry.last_seen = now
+        registry.health_status = "online"
+        registry.health_notified_at = now
+        if not registry.created_at:
+            registry.created_at = now
+        registry.save()
 
         payload = {
             "agent_id": agent_id,
             "hostname": inventory.hostname,
             "os_name": inventory.os_name,
             "os_version": inventory.os_version,
+            "kernel": inventory.kernel,
             "arch": inventory.arch,
+            "domain": inventory.domain,
             "ips": inventory.ips,
             "macs": inventory.macs,
+            "interfaces": inventory.interfaces,
             "cpu_model": inventory.cpu_model,
             "cpu_cores": inventory.cpu_cores,
             "ram_mb": inventory.ram_mb,
             "disk_total_gb": inventory.disk_total_gb,
             "disk_free_gb": inventory.disk_free_gb,
             "uptime_sec": inventory.uptime_sec,
+            "users": inventory.users,
+            "packages": inventory.packages,
+            "services": inventory.services,
+            "open_ports": inventory.open_ports,
             "last_seen": inventory.last_seen.isoformat(),
         }
         broadcast_inventory(payload)
+
+        if is_new_inventory:
+            _emit_alert(_get_live_session(), {
+                "agent": agent_id,
+                "type": "agent_online",
+                "src_ip": primary_ip or "unknown",
+                "dst_ip": "dashboard",
+                "severity": "low",
+                "message": f"Agent {agent_id} registered and online ({inventory.os_name or 'unknown OS'})",
+                "timestamp": now.isoformat(),
+            })
 
         return Response({"status": "ok", "agent_id": agent_id}, status=201)
 
@@ -692,6 +926,13 @@ class InventoryIngestView(APIView):
             return Response({"error": "inventory entry not found"}, status=404)
 
         deleted_agent_id = inventory.agent_id
+        
+        # Cascade delete: remove matching registry entries
+        try:
+            AgentRegistry.objects(agent_id=deleted_agent_id).delete()
+        except Exception:
+            pass  # Registry entry may not exist
+        
         inventory.delete()
         broadcast_inventory({"event_type": "inventory_deleted", "agent_id": deleted_agent_id})
 
@@ -752,6 +993,9 @@ class AgentRegistryView(APIView):
                 "ip": a.ip,
                 "os_name": a.os_name,
                 "notes": a.notes,
+                "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+                "health_status": a.health_status,
+                "health_notified_at": a.health_notified_at.isoformat() if a.health_notified_at else None,
                 "created_at": a.created_at.isoformat(),
             })
         return Response({"items": payload})
@@ -803,6 +1047,27 @@ class AgentRegistryView(APIView):
         return Response({"status": "deleted"})
 
 
+class AgentHealthView(APIView):
+    """GET /api/agents/health/ -> current online/offline state for each agent."""
+
+    def get(self, request):
+        now = datetime.utcnow()
+        limit = int(request.query_params.get("limit", 200))
+        limit = min(max(limit, 1), 500)
+
+        items = []
+        for registry in AgentRegistry.objects.order_by("-last_seen")[:limit]:
+            item = _normalize_agent_inventory_state(registry.agent_id, now=now)
+            if item:
+                items.append(item)
+
+        return Response({
+            "items": items,
+            "offline_threshold_sec": AGENT_OFFLINE_THRESHOLD,
+            "generated_at": now.isoformat(),
+        })
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. Session results
 # ─────────────────────────────────────────────────────────────────────────────
@@ -835,8 +1100,8 @@ class SessionResultsView(APIView):
                 ]
             })
 
-        alerts = Alert.objects(session=session)
-        packets = PacketLog.objects(session=session).limit(500)
+        alerts = Alert.objects(session=session).order_by("-timestamp")
+        packets = PacketLog.objects(session=session).order_by("-timestamp").limit(500)
 
         return Response({
             "session_id": session_id,
@@ -894,7 +1159,7 @@ class SessionPacketsView(APIView):
     """GET /api/packets/history/<session_id>/?limit=500"""
 
     def get(self, request, session_id):
-        session = ScanSession.objects(session_id=session_id).first()
+        session = _get_live_session() if session_id == "live" else ScanSession.objects(session_id=session_id).first()
         if not session:
             return Response({"error": "session not found"}, status=404)
 
@@ -1053,6 +1318,10 @@ class InboundPacketView(APIView):
     def post(self, request):
         session = _get_live_session()
 
+        # Rate limiting: drop excess packets during flood to prevent backend overload
+        if not _check_packet_rate_limit(session.session_id):
+            return Response({"status": "rate_limited"}, status=429)
+
         pkt = {
             "summary":  request.data.get("summary", ""),
             "flags":    request.data.get("flags", ""),
@@ -1060,7 +1329,7 @@ class InboundPacketView(APIView):
             "src_ip":   request.data.get("src_ip", ""),
             "dst_ip":   request.data.get("dst_ip", ""),
             "protocol": request.data.get("protocol", ""),
-            "timestamp": request.data.get("timestamp", datetime.utcnow().isoformat()),
+            "timestamp": request.data.get("timestamp", datetime.now(timezone.utc).isoformat()),
         }
 
         PacketLog(
@@ -1118,7 +1387,7 @@ class InboundPacketView(APIView):
                 "dst_ip": dst_ip or "unknown",
                 "severity": "high",
                 "message": f"ICMP redirect detected from {src_ip} to {dst_ip}",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
         broadcast_packet("live", pkt)

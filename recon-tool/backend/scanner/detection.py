@@ -80,8 +80,8 @@ def check_arp(session, ip: str, mac: str, on_alert=None):
 # Port sweep detection
 # ─────────────────────────────────────────────────────────────────────────────
 
-PORT_SWEEP_THRESHOLD = 15    # distinct ports in 30 seconds
-PORT_SWEEP_WINDOW    = 30    # seconds
+PORT_SWEEP_THRESHOLD = 3     # distinct ports in 10 seconds
+PORT_SWEEP_WINDOW    = 10    # seconds
 
 def check_port_sweep(session, src_ip: str, dst_port: int, on_alert=None):
     """

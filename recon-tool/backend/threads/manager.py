@@ -18,7 +18,7 @@ _registry: dict = {}
 _lock = threading.Lock()
 
 
-def start_thread(target: Callable, args: tuple = (), name: str = "") -> str:
+def start_thread(target: Callable, args: tuple = (), name: str = "", meta: Optional[dict] = None) -> str:
     """
     Start a background daemon thread and register it.
 
@@ -51,7 +51,8 @@ def start_thread(target: Callable, args: tuple = (), name: str = "") -> str:
             "thread": thread,
             "stop_flag": stop_flag,
             "name": name,
-            "status": "running"
+            "status": "running",
+            "meta": dict(meta or {}),
         }
 
     thread.start()
@@ -83,7 +84,8 @@ def get_status(thread_id: str) -> Optional[dict]:
             "thread_id": thread_id,
             "name": entry["name"],
             "alive": entry["thread"].is_alive(),
-            "status": entry["status"]
+            "status": entry["status"],
+            "meta": entry.get("meta", {}),
         }
 
 
@@ -95,7 +97,8 @@ def list_threads() -> list:
                 "thread_id": tid,
                 "name": v["name"],
                 "alive": v["thread"].is_alive(),
-                "status": v["status"]
+                "status": v["status"],
+                "meta": v.get("meta", {}),
             }
             for tid, v in _registry.items()
         ]

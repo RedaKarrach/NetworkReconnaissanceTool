@@ -37,9 +37,11 @@ function PortCell({ result, index }) {
     ? result.protocol
     : "unknown";
   const service = result.service || "n/a";
+  const reason = result.reason || result.method || "n/a";
+  const rtt = Number.isFinite(Number(result.rtt_ms)) ? `${result.rtt_ms}ms` : "n/a";
   const banner = result.banner ? String(result.banner).slice(0, 60) : "n/a";
 
-  const tooltip = `Port: ${result.port}\nProtocol: ${protocol.toUpperCase()}\nService: ${service}\nBanner: ${banner}`;
+  const tooltip = `Port: ${result.port}\nProtocol: ${protocol.toUpperCase()}\nService: ${service}\nReason: ${reason}\nRTT: ${rtt}\nBanner: ${banner}`;
 
   return (
     <div
@@ -60,6 +62,8 @@ function PortCell({ result, index }) {
             <span className="text-xs capitalize text-text-secondary">{result.status}</span>
           </div>
           <div className="font-mono text-xs text-text-tertiary">Service: {service}</div>
+          <div className="font-mono text-xs text-text-tertiary">Reason: {reason}</div>
+          <div className="font-mono text-xs text-text-tertiary">RTT: {rtt}</div>
           <div className="mt-1 font-mono text-xs text-text-tertiary">Banner: {banner}</div>
         </div>
       )}

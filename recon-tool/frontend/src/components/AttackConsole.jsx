@@ -5,7 +5,7 @@
  * Live counters showing packets-per-second from WebSocket stream.
  * ⚠️  FOR AUTHORISED LAB USE ONLY — displays prominent warning banner.
  */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useScan } from "../hooks/useScan";
 
 const ATTACK_TYPES = [
@@ -164,13 +164,45 @@ function AttackCard({ attack, activeThreads, onLaunch, onStop }) {
 }
 
 export default function AttackConsole({ onSessionStart }) {
-  const { startArpSpoof, startSynFlood, startIcmpRedirect, stopThread, loading, error } = useScan();
+  const { startArpSpoof, startSynFlood, startIcmpRedirect, stopThread, getThreads, loading, error } = useScan();
   const [activeThreads, setActiveThreads] = useState([]);
   const [log,           setLog]           = useState([]);
 
   function addLog(msg, type = "info") {
     setLog((prev) => [{ ts: new Date().toLocaleTimeString(), msg, type }, ...prev].slice(0, 20));
   }
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function restoreActiveAttacks() {
+      const result = await getThreads();
+      const items = Array.isArray(result?.items) ? result.items : [];
+
+      const restored = items
+        .filter((item) => item?.alive && item?.meta?.kind === "attack")
+        .map((item) => ({
+          attackId: item.meta.attack_type,
+          threadId: item.thread_id,
+          sessionId: item.meta.session_id,
+          pktCount: 0,
+        }))
+        .filter((entry) => entry.attackId && entry.threadId);
+
+      if (!mounted || restored.length === 0) return;
+
+      setActiveThreads(restored);
+      addLog(`Restored ${restored.length} active attack thread(s)`, "info");
+      if (onSessionStart && restored[0]?.sessionId) {
+        onSessionStart(restored[0].sessionId);
+      }
+    }
+
+    restoreActiveAttacks();
+    return () => {
+      mounted = false;
+    };
+  }, [getThreads, onSessionStart]);
 
   async function handleLaunch(attackId, params) {
     let result = null;

@@ -19,6 +19,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 512M
 
   # ── Django + Channels (Daphne ASGI) ───────────────────────────────────────
   django:
@@ -41,6 +49,14 @@ services:
       - NET_RAW
     ports:
       - "8000:8000"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1.5G
+        reservations:
+          cpus: '1'
+          memory: 768M
     command: >
       sh -c "python manage.py migrate --run-syncdb &&
              daphne -b 0.0.0.0 -p 8000 config.asgi:application"
@@ -56,6 +72,14 @@ services:
       - "3000:3000"
     depends_on:
       - django
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
 
 
 volumes:

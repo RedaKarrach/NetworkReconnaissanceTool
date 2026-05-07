@@ -3,9 +3,11 @@ from django.urls import path
 from .views import (
     HostDiscoveryView, PortScanView, OSFingerprintView,
     ARPSpoofView, SYNFloodView, StopThreadView,
+    ThreadRegistryView, ThreadStatusView,
     SessionResultsView, PDFReportView, InboundAlertView,
     InventoryIngestView, InventoryLatestView,
     AgentRegistryView,
+    AgentHealthView,
     InboundPacketView,
     SessionAlertsView,
     SessionPacketsView,
@@ -27,6 +29,8 @@ urlpatterns = [
     path("attack/arp-spoof/",     ARPSpoofView.as_view()),
     path("attack/syn-flood/",     SYNFloodView.as_view()),
     path("attack/stop/",          StopThreadView.as_view()),
+    path("threads/",              ThreadRegistryView.as_view()),
+    path("threads/<str:thread_id>/", ThreadStatusView.as_view()),
 
     # Inbound alerts from VM agents
     path("alerts/",               InboundAlertView.as_view()),
@@ -40,6 +44,7 @@ urlpatterns = [
     path("agents/inventory/",        InventoryIngestView.as_view()),
     path("agents/inventory/latest/", InventoryLatestView.as_view()),
     path("agents/registry/",         AgentRegistryView.as_view()),
+    path("agents/health/",           AgentHealthView.as_view()),
 
     # Results & reports
     path("results/<str:session_id>/",    SessionResultsView.as_view()),

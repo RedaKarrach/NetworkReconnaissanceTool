@@ -61,40 +61,80 @@ docker-compose up --build
 
 ## ÉTAPE 3 — Agents VM
 
+### Quick start for autostart + health
+
+1. Install the agent once with `--install-autostart` on each VM.
+2. Reboot the VM.
+3. Check the agent health on the backend with:
+
+```bash
+curl http://localhost:8000/api/agents/health/
+```
+
+4. If an agent stops reporting inventory for more than 5 minutes, the backend marks it offline and emits an `agent_offline` alert.
+5. If the agent comes back later, the next inventory heartbeat marks it online again and emits an `agent_online` alert.
+
 ### Windows 10 VM
 
 ```powershell
 # 1. Installer Npcap : https://npcap.com
 # 2. Installer deps
-pip install scapy requests
-# 3. Lancer (PowerShell Admin)
-python agents/victim_agent.py
+pip install scapy requests psutil
+# 3. One-time autostart install (PowerShell Admin)
+python agents/inventory_agent.py --agent-id windows10 --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/ --install-autostart
+python agents/victim_agent.py --agent-name windows10 --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/ --install-autostart
 
-# 4. Inventory agent (PowerShell Admin)
-$env:DASHBOARD_URL = "http://192.168.56.1:8000/api/agents/inventory/"
-$env:AGENT_ID = "windows10"
-$env:AGENT_TOKEN = "change-me"
-python agents/inventory_agent.py
+# 4. Optional run now (without reboot)
+python agents/inventory_agent.py --agent-id windows10 --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/
+python agents/victim_agent.py --agent-name windows10 --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/
+
+# 5. Optional removal
+python agents/inventory_agent.py --uninstall-autostart
+python agents/victim_agent.py --uninstall-autostart
 ```
 
 ### Ubuntu VM
 
 ```bash
 # 1. Installer deps
-pip install requests psutil scapy
+pip3 install requests psutil scapy
 
-# 2. Inventory agent (shows as Ubuntu Server in the dashboard)
-export DASHBOARD_URL=http://192.168.56.1:8000/api/agents/inventory/
-export AGENT_ID="ubuntu server"
-export AGENT_TOKEN=change-me
-python3 agents/inventory_agent.py
+# 2. Copy agent scripts to VM
+scp agents/inventory_agent.py ubuntu@192.168.56.x:~/Desktop/
+scp agents/victim_agent.py ubuntu@192.168.56.x:~/Desktop/
 
-# 3. Victim / alert agent
-export DASHBOARD_URL=http://192.168.56.1:8000/api/alerts/
-export PACKET_URL=http://192.168.56.1:8000/api/packets/
-export AGENT_NAME=ubuntu-victim
-python3 agents/ubuntu_victim_agent.py
+# 3. One-time autostart install (systemd service, root/sudo)
+sudo python3 ~/Desktop/inventory_agent.py --agent-id ubuntu-vm --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/ --install-autostart
+sudo python3 ~/Desktop/victim_agent.py --agent-name ubuntu-vm --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/ --install-autostart
+
+# 4. Optional run now (without reboot)
+sudo python3 ~/Desktop/inventory_agent.py --agent-id ubuntu-vm --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/
+sudo python3 ~/Desktop/victim_agent.py --agent-name ubuntu-vm --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/
+
+# 5. Optional removal
+sudo python3 ~/Desktop/inventory_agent.py --uninstall-autostart
+sudo python3 ~/Desktop/victim_agent.py --uninstall-autostart
 ```
+
+---
+
+## Token Authentication
+
+Agents authenticate to the backend using an `AGENT_TOKEN` header:
+- **Backend token** (`.env`): `AGENT_TOKEN=change-me`
+- **Agent token** (env var): `export AGENT_TOKEN=change-me`
+
+Both must match. If the backend receives a different token or no token when one is expected, it returns **HTTP 401**.
+
+To disable token auth: Set `AGENT_TOKEN=""` in the `.env` file (token validation becomes optional).
+
+The health endpoint also works as a simple SOC status check:
+
+```bash
+curl http://localhost:8000/api/agents/health/
+```
+
+It returns each agent’s `online` state, `last_seen`, and `offline_for_sec` value.
 
 ---
 

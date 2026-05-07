@@ -7,6 +7,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useInventory } from "../hooks/useInventory";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
+import { useAgentHealth } from "../hooks/useAgentHealth";
 import PacketInspector from "../components/PacketInspector";
 
 const LIVE_SESSION = "live";
@@ -61,6 +62,34 @@ const RULE_DEFS = [
   { id: "DET-004", key: "icmp", name: "ICMP redirect observed", severity: "high" },
 ];
 
+const RULE_REFERENCE = [
+  {
+    title: "Alert Rules",
+    items: [
+      { id: "ALR-ARP", label: "ARP anomaly (IP->MAC change)", detail: "High severity" },
+      { id: "ALR-SYN", label: "SYN flood detection", detail: "Critical severity" },
+      { id: "ALR-SWEEP", label: "Port sweep detection", detail: "Medium severity" },
+      { id: "ALR-ICMP", label: "ICMP redirect detection", detail: "High severity" },
+    ],
+  },
+  {
+    title: "Attack Simulations",
+    items: [
+      { id: "ATK-ARP", label: "ARP spoof", detail: "MITM poison" },
+      { id: "ATK-SYN", label: "SYN flood", detail: "TCP exhaustion" },
+      { id: "ATK-ICMP", label: "ICMP redirect", detail: "Route manipulation" },
+    ],
+  },
+  {
+    title: "Scan Operations",
+    items: [
+      { id: "SCN-DISC", label: "Host discovery", detail: "ARP sweep" },
+      { id: "SCN-PORT", label: "Port scan", detail: "SYN/Connect + banners" },
+      { id: "SCN-OS", label: "OS fingerprint", detail: "TTL + window + Xmas" },
+    ],
+  },
+];
+
 function normalizeSeverity(value) {
   if (typeof value !== "string") return "low";
   const sev = value.toLowerCase();
@@ -89,9 +118,15 @@ function parseTimestamp(value) {
 }
 
 function formatTime(value) {
-  const date = new Date(parseTimestamp(value));
-  const part = (n) => String(n).padStart(2, "0");
-  return `${part(date.getHours())}:${part(date.getMinutes())}:${part(date.getSeconds())}`;
+  const timestamp = parseTimestamp(value);
+  const date = new Date(timestamp);
+  const now = Date.now();
+  const yyyy = date.getFullYear();
+  const mo = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mins = String(date.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mo}-${dd} ${hh}:${mins}`;
 }
 
 function mapTypeToRule(type) {
@@ -100,6 +135,11 @@ function mapTypeToRule(type) {
   if (t.includes("icmp")) return "icmp";
   if (t.includes("sweep") || t.includes("port")) return "sweep";
   return "syn";
+}
+
+function isSynLikePacket(packet) {
+  const flags = String(packet?.flags || "").toUpperCase();
+  return flags.includes("SYN") || flags === "S" || flags.includes("SYN-FLOOD");
 }
 
 function severityRank(value) {
@@ -111,7 +151,7 @@ function severityRank(value) {
 
 function osEmoji(name) {
   const os = String(name || "unknown").toLowerCase();
-  if (os.includes("linux")) return "🐧";
+  if (os.includes("linux") || os.includes("ubuntu") || os.includes("debian") || os.includes("kali") || os.includes("centos") || os.includes("fedora") || os.includes("red hat") || os.includes("rhel")) return "🐧";
   if (os.includes("windows")) return "🪟";
   if (os.includes("mac")) return "🍎";
   return "❓";
@@ -173,6 +213,7 @@ export default function SOCDashboard() {
   const ws = useWebSocket(LIVE_SESSION);
   const { items: inventoryItems } = useInventory();
   const { items: registryItems } = useAgentRegistry();
+  const { items: healthItems, error: healthError } = useAgentHealth();
   const isWsConnected = ws.status === "connected";
 
   const [synPps, setSynPps] = useState(0);
@@ -194,16 +235,20 @@ export default function SOCDashboard() {
   // Live agents (merged from registry + inventory)
   const liveAgents = useMemo(() => {
     const map = new Map();
+    const healthByAgent = new Map((healthItems || []).filter(Boolean).map((item) => [item.agent_id, item]));
 
     (registryItems || []).forEach((agent) => {
       const key = agent.agent_id || agent.hostname || agent.ip;
       if (!key) return;
+      const health = healthByAgent.get(agent.agent_id) || {};
       map.set(key, {
         agentId: agent.agent_id || key,
         hostname: agent.hostname || "—",
         ip: agent.ip || "—",
         os: agent.os_name || "unknown",
-        lastSeen: null,
+        lastSeen: health.last_seen ? new Date(health.last_seen) : null,
+        healthStatus: health.health_status || "unknown",
+        offlineForSec: typeof health.offline_for_sec === "number" ? health.offline_for_sec : null,
       });
     });
 
@@ -217,7 +262,11 @@ export default function SOCDashboard() {
         ip: (inv.ips || [])[0] || "—",
         os: inv.os_name || "unknown",
         lastSeen: null,
+        healthStatus: "unknown",
+        offlineForSec: null,
       };
+
+      const health = healthByAgent.get(inv.agent_id) || {};
 
       map.set(key, {
         ...prev,
@@ -225,13 +274,15 @@ export default function SOCDashboard() {
         hostname: inv.hostname || prev.hostname,
         ip: (inv.ips || [])[0] || prev.ip,
         os: inv.os_name || prev.os,
-        lastSeen: inv.last_seen ? new Date(inv.last_seen) : prev.lastSeen,
+        lastSeen: health.last_seen ? new Date(health.last_seen) : (inv.last_seen ? new Date(inv.last_seen) : prev.lastSeen),
+        healthStatus: health.health_status || prev.healthStatus,
+        offlineForSec: typeof health.offline_for_sec === "number" ? health.offline_for_sec : prev.offlineForSec,
       });
     });
 
     return Array.from(map.values())
       .map((agent) => {
-        const online = agent.lastSeen ? Date.now() - agent.lastSeen.getTime() < ONLINE_WINDOW_MS : false;
+        const online = agent.healthStatus === "online" ? true : agent.healthStatus === "offline" ? false : (agent.lastSeen ? Date.now() - agent.lastSeen.getTime() < ONLINE_WINDOW_MS : false);
         return { ...agent, online };
       })
       .sort((a, b) => {
@@ -240,7 +291,7 @@ export default function SOCDashboard() {
         const tb = b.lastSeen ? b.lastSeen.getTime() : 0;
         return tb - ta;
       });
-  }, [inventoryItems, registryItems]);
+  }, [healthItems, inventoryItems, registryItems]);
 
   const onlineAgents = useMemo(() => liveAgents.filter((agent) => agent.online), [liveAgents]);
   const onlineAgentCount = onlineAgents.length;
@@ -295,6 +346,16 @@ export default function SOCDashboard() {
     }).length;
   }, [ws?.packets]);
 
+  const synPacketsLast1s = useMemo(() => {
+    const now = Date.now();
+    return (ws?.packets || []).filter((packet) => {
+      if (!packet?.timestamp || !isSynLikePacket(packet)) return false;
+      const parsed = Date.parse(packet.timestamp);
+      if (Number.isNaN(parsed)) return false;
+      return parsed >= now - 1000;
+    }).length;
+  }, [ws?.packets]);
+
   // Update newest alert key for animation
   useEffect(() => {
     if (!alerts.length) return;
@@ -308,11 +369,12 @@ export default function SOCDashboard() {
 
   // Sync SYN rate from WebSocket
   useEffect(() => {
-    const raw = isWsConnected ? Math.max(0, Number(ws.synPps) || 0) : 0;
+    const rawWs = isWsConnected ? Math.max(0, Number(ws.synPps) || 0) : 0;
+    const raw = Math.max(rawWs, synPacketsLast1s);
     const next = raw <= SYN_NOISE_FLOOR_PPS ? 0 : raw;
     setSynPps(next);
     setSynHistory((prev) => [...prev.slice(1), next]);
-  }, [isWsConnected, ws.synPps]);
+  }, [isWsConnected, ws.synPps, synPacketsLast1s]);
 
   // Flash animation on metric changes
   useEffect(() => {
@@ -430,6 +492,11 @@ export default function SOCDashboard() {
         <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1 }}>
           <div className="card-premium p-4 tilt-3d-soft">
             <p className="text-sm font-medium tracking-widest text-text-tertiary">LIVE ENDPOINT STATUS</p>
+            {healthError && (
+              <div className="mt-2 rounded-md border border-border-default bg-bg-elevated/70 px-3 py-2 text-xs text-text-tertiary">
+                Health feed unavailable: {healthError}
+              </div>
+            )}
             <div className="mt-3 grid grid-cols-2 gap-2">
               <AgentStat label="Online" value={onlineAgentCount} valueClass="font-mono text-status-success" />
               <AgentStat label="Tracked" value={liveAgents.length} valueClass="font-mono text-accent-primary" />
@@ -443,12 +510,15 @@ export default function SOCDashboard() {
               ) : (
                 liveAgents.slice(0, 5).map((agent) => (
                   <div key={agent.agentId} className="agent-chip flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${agent.online ? "bg-status-success" : "bg-status-offline"}`} />
+                    <span className={`h-2 w-2 rounded-full ${agent.healthStatus === "online" ? "bg-status-success" : agent.healthStatus === "offline" ? "bg-status-danger" : agent.online ? "bg-status-success" : "bg-status-offline"}`} />
                     <span className="text-sm">{osEmoji(agent.os)}</span>
                     <span className="flex-1 truncate text-sm text-text-primary">
                       {agent.hostname && agent.hostname !== "—" ? agent.hostname : agent.agentId}
                     </span>
                     <span className="font-mono text-xs text-text-tertiary">{agent.ip}</span>
+                    <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${agent.healthStatus === "online" ? "bg-status-success/15 text-status-success" : agent.healthStatus === "offline" ? "bg-status-danger/15 text-status-danger" : "bg-bg-elevated text-text-tertiary"}`}>
+                      {agent.healthStatus || "unknown"}
+                    </span>
                   </div>
                 ))
               )}
@@ -520,6 +590,31 @@ export default function SOCDashboard() {
                     ))}
                   </div>
                   <span className={`font-mono text-md font-bold ${row.sevStyle.valueText}`}>{row.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card-premium p-4 tilt-3d-soft">
+            <p className="text-sm font-medium tracking-widest text-text-tertiary">RULES REFERENCE</p>
+            <div className="mt-3 space-y-3">
+              {RULE_REFERENCE.map((group) => (
+                <div key={group.title} className="rounded-lg border border-border-default/60 bg-bg-elevated/60 p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-widest text-text-tertiary">{group.title}</span>
+                    <span className="orbital-tag">{group.items.length} rules</span>
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {group.items.map((item) => (
+                      <div key={item.id} className="rounded-md border border-border-default/60 bg-bg-card/40 px-3 py-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-xs text-text-tertiary">{item.id}</span>
+                          <span className="text-xs text-text-tertiary">{item.detail}</span>
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-text-primary">{item.label}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>

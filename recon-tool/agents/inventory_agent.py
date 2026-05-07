@@ -19,7 +19,12 @@ import platform
 import socket
 import subprocess
 import time
-from datetime import datetime
+import signal
+import random
+import argparse
+import shutil
+import sys
+from datetime import datetime, timezone
 
 import requests
 
@@ -32,6 +37,119 @@ DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://192.168.56.1:8000/api/ag
 AGENT_ID = os.environ.get("AGENT_ID")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 INTERVAL = int(os.environ.get("INTERVAL", "60"))
+ONESHOT = os.environ.get("ONESHOT", "false").lower() in {"1", "true", "yes"}
+AUTOSTART_NAME = os.environ.get("AUTOSTART_NAME", "ReconInventoryAgent")
+
+
+def _quote_windows(arg):
+  return f'"{str(arg).replace("\"", "\\\"")}"'
+
+
+def _runtime_command(dashboard_url, agent_id, agent_token, interval):
+  script_path = os.path.abspath(__file__)
+  cmd = [sys.executable, script_path, "--dashboard-url", dashboard_url, "--interval", str(interval)]
+  if agent_id:
+    cmd.extend(["--agent-id", agent_id])
+  if agent_token:
+    cmd.extend(["--agent-token", agent_token])
+  return cmd
+
+
+def _windows_task_exists(name: str) -> bool:
+  result = subprocess.run(["schtasks", "/Query", "/TN", name], capture_output=True, text=True)
+  return result.returncode == 0
+
+
+def _install_windows_task(name: str, task_run: str, trigger: str) -> None:
+  create_cmd = [
+    "schtasks", "/Create", "/F", "/SC", trigger,
+    "/TN", name,
+    "/TR", task_run,
+    "/RL", "HIGHEST",
+    "/RU", "SYSTEM",
+    "/DELAY", "0000:30",
+  ]
+  completed = subprocess.run(create_cmd, capture_output=True, text=True)
+  if completed.returncode != 0:
+    raise RuntimeError((completed.stderr or completed.stdout or "schtasks failed").strip())
+
+
+def install_autostart(dashboard_url, agent_id, agent_token, interval):
+  cmd = _runtime_command(dashboard_url, agent_id, agent_token, interval)
+
+  if os.name == "nt":
+    task_run = " ".join(_quote_windows(part) for part in cmd)
+    start_name = AUTOSTART_NAME
+    logon_name = f"{AUTOSTART_NAME}-Logon"
+    _install_windows_task(start_name, task_run, "ONSTART")
+    _install_windows_task(logon_name, task_run, "ONLOGON")
+    return f"Installed Windows startup tasks: {start_name}, {logon_name}"
+
+  service_name = f"{AUTOSTART_NAME}.service"
+  service_path = f"/etc/systemd/system/{service_name}"
+  exec_cmd = " ".join(f'"{part}"' for part in cmd)
+  service_body = "\n".join([
+    "[Unit]",
+    "Description=Recon Tool Inventory Agent",
+    "After=network-online.target",
+    "Wants=network-online.target",
+    "",
+    "[Service]",
+    "Type=simple",
+    f"ExecStart={exec_cmd}",
+    "Restart=always",
+    "RestartSec=5",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "",
+  ])
+
+  try:
+    with open(service_path, "w", encoding="utf-8") as handle:
+      handle.write(service_body)
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "enable", "--now", service_name], check=True)
+  except PermissionError as exc:
+    raise RuntimeError("Permission denied writing systemd service; run as root/sudo.") from exc
+  except subprocess.CalledProcessError as exc:
+    raise RuntimeError(f"systemctl failed: {exc}") from exc
+
+  return f"Installed Linux systemd service: {service_name}"
+
+
+def uninstall_autostart():
+  if os.name == "nt":
+    names = [AUTOSTART_NAME, f"{AUTOSTART_NAME}-Logon"]
+    for name in names:
+      subprocess.run(["schtasks", "/Delete", "/F", "/TN", name], capture_output=True, text=True)
+    return f"Removed Windows startup tasks: {', '.join(names)}"
+
+  service_name = f"{AUTOSTART_NAME}.service"
+  service_path = f"/etc/systemd/system/{service_name}"
+  try:
+    subprocess.run(["systemctl", "disable", "--now", service_name], check=False)
+    if os.path.exists(service_path):
+      os.remove(service_path)
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+  except PermissionError as exc:
+    raise RuntimeError("Permission denied removing systemd service; run as root/sudo.") from exc
+  except subprocess.CalledProcessError as exc:
+    raise RuntimeError(f"systemctl failed: {exc}") from exc
+
+  return f"Removed Linux systemd service: {service_name}"
+
+
+def _autostart_installed():
+  if os.name == "nt":
+    start_name = AUTOSTART_NAME
+    logon_name = f"{AUTOSTART_NAME}-Logon"
+    return _windows_task_exists(start_name) and _windows_task_exists(logon_name)
+
+  service_name = f"{AUTOSTART_NAME}.service"
+  result = subprocess.run(["systemctl", "is-enabled", service_name],
+                          capture_output=True, text=True)
+  return result.returncode == 0
 
 
 def get_default_agent_id():
@@ -110,8 +228,12 @@ def get_interfaces():
             macs.append(addr.address)
       interfaces.append(iface)
   else:
-    ip = socket.gethostbyname(socket.gethostname())
-    ips.append(ip)
+    try:
+      ip = socket.gethostbyname(socket.gethostname())
+      ips.append(ip)
+    except Exception:
+      # Best-effort fallback
+      ips.append("0.0.0.0")
 
   return interfaces, sorted(set(ips)), sorted(set(macs))
 
@@ -133,9 +255,20 @@ def get_memory_mb():
 def get_disk_gb():
   if not psutil:
     return None, None
-  path = "C:\\" if os.name == "nt" else "/"
-  usage = psutil.disk_usage(path)
-  return round(usage.total / (1024 ** 3), 2), round(usage.free / (1024 ** 3), 2)
+  try:
+    if os.name == "nt":
+      # Use system drive if available, fallback to C:\
+      system_drive = os.environ.get("SystemDrive", "C:")
+      path = system_drive + "\\"
+      if not os.path.exists(path):
+        path = "C:\\"
+    else:
+      # Prefer root
+      path = "/"
+    usage = psutil.disk_usage(path)
+    return round(usage.total / (1024 ** 3), 2), round(usage.free / (1024 ** 3), 2)
+  except Exception:
+    return None, None
 
 
 def get_uptime_sec():
@@ -159,26 +292,33 @@ def get_open_ports():
       if c.status == "LISTEN" and c.laddr:
         ports.add(c.laddr.port)
   except Exception:
+    # Could be permission error; report empty but log a warning
+    try:
+      print(f"[WARN] get_open_ports(): failed to list connections (insufficient privileges or platform restriction)")
+    except Exception:
+      pass
     return []
   return sorted(ports)
 
 
 def get_packages():
   if os.name == "nt":
+    # Query both 64-bit and 32-bit uninstall registry hives to capture all installed programs
     cmd = (
       "powershell -NoProfile -Command "
-      "\"Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* "
+      "\"Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* , \\\n+HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* "
       "| Where-Object { $_.DisplayName } "
       "| Select-Object -ExpandProperty DisplayName\""
     )
     out = run_cmd(cmd)
     return out.splitlines()[:200] if out else []
 
-  if run_cmd("command -v dpkg-query"):
+  # Prefer using shutil.which to check command availability
+  if shutil.which("dpkg-query"):
     out = run_cmd("dpkg-query -W -f='${Package}\n'")
     return out.splitlines()[:200] if out else []
 
-  if run_cmd("command -v rpm"):
+  if shutil.which("rpm"):
     out = run_cmd("rpm -qa")
     return out.splitlines()[:200] if out else []
 
@@ -236,7 +376,7 @@ def build_payload():
     "packages": get_packages(),
     "services": get_services(),
     "open_ports": get_open_ports(),
-    "timestamp": datetime.utcnow().isoformat(),
+    "timestamp": datetime.now(timezone.utc).isoformat(),
   }
 
 
@@ -244,11 +384,75 @@ def post_inventory(payload):
   headers = {"Content-Type": "application/json"}
   if AGENT_TOKEN:
     headers["X-AGENT-TOKEN"] = AGENT_TOKEN
-  resp = requests.post(DASHBOARD_URL, headers=headers, data=json.dumps(payload), timeout=8)
-  return resp.status_code, resp.text
+  # Retry with small exponential backoff on transient network failures
+  backoff = 1
+  for attempt in range(1, 4):
+    try:
+      resp = requests.post(DASHBOARD_URL, headers=headers, data=json.dumps(payload), timeout=8)
+      return resp.status_code, resp.text
+    except Exception as exc:
+      if attempt == 3:
+        raise
+      time.sleep(backoff)
+      backoff *= 2
 
 
 def main():
+  global DASHBOARD_URL, AGENT_ID, AGENT_TOKEN, INTERVAL
+
+  parser = argparse.ArgumentParser(description="Recon inventory agent")
+  parser.add_argument("--interval", type=int, default=None)
+  parser.add_argument("--once", action="store_true")
+  parser.add_argument("--dashboard-url", default=None)
+  parser.add_argument("--agent-id", default=None)
+  parser.add_argument("--agent-token", default=None)
+  parser.add_argument("--install-autostart", action="store_true")
+  parser.add_argument("--uninstall-autostart", action="store_true")
+  parser.add_argument("--ensure-autostart", action="store_true")
+  args, _ = parser.parse_known_args()
+
+  if args.dashboard_url:
+    DASHBOARD_URL = args.dashboard_url
+  if args.agent_id:
+    AGENT_ID = args.agent_id
+  if args.agent_token is not None:
+    AGENT_TOKEN = args.agent_token
+  if args.interval:
+    INTERVAL = max(5, args.interval)
+
+  if args.install_autostart and args.uninstall_autostart:
+    print("[ERR] choose only one of --install-autostart or --uninstall-autostart")
+    sys.exit(2)
+
+  if args.install_autostart:
+    try:
+      message = install_autostart(DASHBOARD_URL, AGENT_ID or get_default_agent_id(), AGENT_TOKEN, INTERVAL)
+      print(f"[OK] {message}")
+      sys.exit(0)
+    except Exception as exc:
+      print(f"[ERR] {exc}")
+      sys.exit(1)
+
+  if args.uninstall_autostart:
+    try:
+      message = uninstall_autostart()
+      print(f"[OK] {message}")
+      sys.exit(0)
+    except Exception as exc:
+      print(f"[ERR] {exc}")
+      sys.exit(1)
+
+  ensure_autostart = args.ensure_autostart or os.environ.get("ENSURE_AUTOSTART", "").lower() in {
+    "1", "true", "yes"
+  }
+  if ensure_autostart:
+    try:
+      if not _autostart_installed():
+        message = install_autostart(DASHBOARD_URL, AGENT_ID or get_default_agent_id(), AGENT_TOKEN, INTERVAL)
+        print(f"[OK] {message}")
+    except Exception as exc:
+      print(f"[ERR] Autostart install failed: {exc}")
+
   print("=" * 60)
   print("  Inventory Agent — Host Telemetry")
   print("=" * 60)
@@ -257,7 +461,24 @@ def main():
   print(f"  Interval : {INTERVAL}s")
   print("=" * 60)
 
-  while True:
+  interval = INTERVAL
+  oneshot = args.once or ONESHOT
+
+  running = True
+
+  def _signal_handler(signum, frame):
+    nonlocal running
+    running = False
+    print(f"[{datetime.now().isoformat(timespec='seconds')}] received stop signal ({signum}), exiting gracefully...")
+
+  try:
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+  except Exception:
+    # Some platforms (e.g., Windows) may behave differently; ignore if unsupported
+    pass
+
+  while running:
     payload = build_payload()
     try:
       code, _ = post_inventory(payload)
@@ -266,7 +487,16 @@ def main():
     except Exception as exc:
       print(f"[{datetime.now().isoformat(timespec='seconds')}] send failed: {exc}")
 
-    time.sleep(INTERVAL)
+    if oneshot:
+      break
+
+    # Add small jitter to avoid synchronization storms when many agents run
+    jitter = random.uniform(-0.1, 0.1) * max(1, interval)
+    sleep_time = max(1, interval + jitter)
+    slept = 0
+    while running and slept < sleep_time:
+      time.sleep(1)
+      slept += 1
 
 
 if __name__ == "__main__":

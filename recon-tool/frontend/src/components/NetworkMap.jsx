@@ -16,7 +16,9 @@ const OS_COLORS = {
 
 function getColor(os) {
   const value = String(os || "").toLowerCase();
-  if (value.includes("linux")) return OS_COLORS.linux;
+  if (value.includes("linux") || value.includes("ubuntu") || value.includes("debian") || value.includes("kali") || value.includes("centos") || value.includes("fedora") || value.includes("red hat") || value.includes("rhel")) {
+    return OS_COLORS.linux;
+  }
   if (value.includes("windows")) return OS_COLORS.windows;
   if (value.includes("mac")) return OS_COLORS.macos;
   return OS_COLORS.unknown;
@@ -38,8 +40,8 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
 
     root.selectAll("g[data-node-id]").each(function () {
       const nodeGroup = d3.select(this);
-      const nodeId = nodeGroup.attr("data-node-id");
-      const isSelected = nodeId === selectedId;
+      const nodeIp = nodeGroup.attr("data-node-ip");
+      const isSelected = selectedId && nodeIp === selectedId;
 
       nodeGroup.select("circle.node-ring")
         .attr("opacity", isSelected ? 0.3 : 0)
@@ -69,23 +71,28 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
     });
     svg.call(zoom);
 
-    // Build nodes from unique endpoint IPs only.
+    // Build nodes from endpoint list (allow multiple nodes per IP when agent_id differs).
     const uniqueHosts = [];
-    const seenIp = new Set();
-    hosts.forEach((host) => {
+    const seenKey = new Set();
+    hosts.forEach((host, index) => {
       const ip = String(host?.ip || "").trim();
-      if (!ip || seenIp.has(ip)) return;
-      seenIp.add(ip);
-      uniqueHosts.push({ ...host, ip });
+      if (!ip) return;
+      const agentKey = String(host?.agent_id || host?.hostname || index);
+      const key = `${ip}|${agentKey}`;
+      if (seenKey.has(key)) return;
+      seenKey.add(key);
+      uniqueHosts.push({ ...host, ip, _nodeKey: key });
     });
 
     const trimmedHosts = uniqueHosts.slice(0, maxHosts);
     const nodes = trimmedHosts.map((h) => {
-      const previous = positionRef.current.get(h.ip) || {};
+      const nodeKey = h._nodeKey || h.ip;
+      const previous = positionRef.current.get(nodeKey) || {};
       return {
         ...h,
-        id: h.ip,
+        id: nodeKey,
         label: h.hostname || h.ip,
+        ip: h.ip,
         mac: h.mac,
         os: h.os_guess || h.os || "unknown",
         type: "host",
@@ -96,7 +103,16 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
       };
     });
 
+    // Create links between all nodes to show network connectivity
     const links = [];
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        links.push({
+          source: nodes[i].id,
+          target: nodes[j].id,
+        });
+      }
+    }
 
     // Force simulation
     const simulation = d3.forceSimulation(nodes)
@@ -155,6 +171,7 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
       });
 
     node.attr("data-node-id", (d) => d.id);
+    node.attr("data-node-ip", (d) => d.ip || d.id);
 
     node.append("circle")
       .attr("class", "node-ring")
@@ -162,13 +179,13 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
       .attr("fill", "none")
       .attr("stroke", (d) => (d.type === "scanner" ? "var(--color-accent-primary)" : getColor(d.os)))
       .attr("stroke-width", 1.5)
-      .attr("opacity", (d) => (d.id === selectedHostId ? 0.3 : 0))
+      .attr("opacity", (d) => (selectedHostId && d.ip === selectedHostId ? 0.3 : 0))
       .style("animation", "none");
 
     // Circles
     node.append("circle")
       .attr("class", "node-core")
-      .attr("r", (d) => (d.id === selectedHostId ? 24 : 20))
+      .attr("r", (d) => (selectedHostId && d.ip === selectedHostId ? 24 : 20))
       .attr("fill", (d) => (d.type === "scanner" ? "var(--color-accent-primary)" : getColor(d.os)))
       .attr("stroke", "rgba(255,255,255,0.15)")
       .attr("stroke-width", 1.5);
@@ -246,7 +263,7 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
         style={{ opacity: 0 }}
       />
 
-      <div className="absolute bottom-4 right-4 rounded-md border border-border-elevated bg-bg-elevated/80 p-2 backdrop-blur">
+      <div className="absolute bottom-4 right-4 z-20 rounded-md border border-border-elevated bg-bg-elevated/80 p-2 backdrop-blur">
         <div className="flex items-center gap-2 text-xs text-text-secondary">
           <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OS_COLORS.linux }} />
           Linux
@@ -265,7 +282,7 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
         </div>
       </div>
 
-      <div className="absolute right-4 top-4 flex flex-col gap-2">
+      <div className="absolute right-4 top-4 z-20 flex flex-col gap-2">
         <button
           ref={zoomInRef}
           type="button"

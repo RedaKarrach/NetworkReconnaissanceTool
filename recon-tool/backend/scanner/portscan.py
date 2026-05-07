@@ -21,6 +21,7 @@ Banner grabbing:
 """
 import socket
 import threading
+import time
 from datetime import datetime
 from scapy.all import (
     IP, TCP, UDP, ICMP,
@@ -56,12 +57,15 @@ def syn_scan_port(target_ip: str, port: int, timeout: float = 2.0) -> dict:
         "port": port,
         "status": "filtered",
         "flags": "",
-        "ttl": 0
+        "ttl": 0,
+        "reason": "no_reply",
+        "method": "syn"
     }
 
     if response is None:
         # No reply → filtered by firewall or host is down
         result["status"] = "filtered"
+        result["reason"] = "no_reply"
 
     elif response.haslayer(TCP):
         tcp_resp = response[TCP]
@@ -70,6 +74,7 @@ def syn_scan_port(target_ip: str, port: int, timeout: float = 2.0) -> dict:
 
         if tcp_resp.flags == 0x12:   # SYN-ACK (0x12 = SA flags)
             result["status"] = "open"
+            result["reason"] = "syn_ack"
             # Immediately RST to tear down half-open connection cleanly
             rst = IP(dst=target_ip) / TCP(
                 dport=port,
@@ -81,14 +86,60 @@ def syn_scan_port(target_ip: str, port: int, timeout: float = 2.0) -> dict:
 
         elif tcp_resp.flags == 0x14:  # RST-ACK (0x14 = RA flags)
             result["status"] = "closed"
+            result["reason"] = "rst_ack"
 
     elif response.haslayer(ICMP):
         # ICMP type 3 = destination unreachable (various codes = filtered)
         icmp = response[ICMP]
         if int(icmp.type) == 3 and int(icmp.code) in (1, 2, 3, 9, 10, 13):
             result["status"] = "filtered"
+            result["reason"] = f"icmp_{icmp.code}"
 
     return result
+
+
+def connect_scan_port(target_ip: str, port: int, timeout: float = 2.0) -> dict:
+    """
+    TCP connect scan fallback when raw sockets are not available.
+    """
+    start = time.time()
+    result = {
+        "port": port,
+        "status": "filtered",
+        "flags": "CONNECT",
+        "ttl": 0,
+        "reason": "timeout",
+        "method": "connect",
+        "rtt_ms": None,
+    }
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((target_ip, port))
+        result["status"] = "open"
+        result["reason"] = "connect"
+    except socket.timeout:
+        result["status"] = "filtered"
+        result["reason"] = "timeout"
+    except ConnectionRefusedError:
+        result["status"] = "closed"
+        result["reason"] = "refused"
+    except OSError:
+        result["status"] = "filtered"
+        result["reason"] = "os_error"
+    finally:
+        sock.close()
+
+    result["rtt_ms"] = int((time.time() - start) * 1000)
+    return result
+
+
+def _guess_service(port: int, protocol: str) -> str:
+    try:
+        return socket.getservbyport(port, protocol.lower())
+    except Exception:
+        return "unknown"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -192,7 +243,11 @@ def run_port_scan(
         ts = datetime.utcnow().isoformat()
 
         if protocol == "tcp":
-            result = syn_scan_port(target_ip, port)
+            try:
+                result = syn_scan_port(target_ip, port)
+            except (PermissionError, OSError):
+                result = connect_scan_port(target_ip, port)
+
             # Grab banner on confirmed open ports
             if result["status"] == "open":
                 result["banner"] = grab_banner(target_ip, port)
@@ -204,15 +259,17 @@ def run_port_scan(
 
         result["protocol"] = protocol
         result["target_ip"] = target_ip
+        result["service"] = _guess_service(port, protocol)
 
         if on_result:
             on_result(result)
 
         if on_packet:
+            detail = result.get("reason") or result.get("method", "scan")
             on_packet({
                 "summary": (
-                    f"{protocol.upper()} port {port}/{target_ip} → "
-                    f"{result['status']}"
+                    f"{protocol.upper()} {target_ip}:{port} "
+                    f"→ {result['status']} ({detail})"
                     + (f" [{result['banner'][:60]}]" if result.get("banner") else "")
                 ),
                 "flags": result.get("flags", ""),

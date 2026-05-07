@@ -19,6 +19,9 @@ import sys
 import requests
 import subprocess
 import platform
+import os
+import argparse
+import socket
 from collections import defaultdict
 
 try:
@@ -28,19 +31,20 @@ except ImportError:
     sys.exit(1)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-DASHBOARD_URL  = "http://192.168.56.1:8000/api/alerts/"   # Host machine IP
-PACKET_URL     = "http://192.168.56.1:8000/api/packets/"
-AGENT_NAME     = "win-victim"
-MY_IP          = "192.168.56.20"
+DASHBOARD_URL  = os.environ.get("DASHBOARD_URL", "http://192.168.56.1:8000/api/alerts/")
+PACKET_URL     = os.environ.get("PACKET_URL", "http://192.168.56.1:8000/api/packets/")
+AGENT_NAME     = os.environ.get("AGENT_NAME", platform.node() or "victim-agent")
+MY_IP          = os.environ.get("MY_IP", "")
+AUTOSTART_NAME = os.environ.get("AUTOSTART_NAME", "ReconVictimAgent")
 
 # Detection thresholds (must match detection.py on the server)
-SYN_THRESHOLD  = 200   # SYNs from same IP within SYN_WINDOW seconds
-SYN_WINDOW     = 10    # seconds
-ARP_COOLDOWN   = 5     # seconds before re-alerting same IP
-SYN_TOTAL_THRESHOLD = 200   # total SYNs to same dst port within SYN_WINDOW
-SYN_TOTAL_COOLDOWN  = 8     # seconds before re-alerting same dst port
-PORT_SWEEP_THRESHOLD = 15   # distinct ports from same source within PORT_SWEEP_WINDOW
-PORT_SWEEP_WINDOW    = 30   # seconds
+SYN_THRESHOLD  = int(os.environ.get("SYN_THRESHOLD", "200"))   # SYNs from same IP within SYN_WINDOW seconds
+SYN_WINDOW     = int(os.environ.get("SYN_WINDOW", "10"))      # seconds
+ARP_COOLDOWN   = int(os.environ.get("ARP_COOLDOWN", "5"))     # seconds before re-alerting same IP
+SYN_TOTAL_THRESHOLD = int(os.environ.get("SYN_TOTAL_THRESHOLD", "200"))   # total SYNs to same dst port within SYN_WINDOW
+SYN_TOTAL_COOLDOWN  = int(os.environ.get("SYN_TOTAL_COOLDOWN", "8"))      # seconds before re-alerting same dst port
+PORT_SWEEP_THRESHOLD = int(os.environ.get("PORT_SWEEP_THRESHOLD", "3"))   # distinct ports from same source within window
+PORT_SWEEP_WINDOW    = int(os.environ.get("PORT_SWEEP_WINDOW", "10"))     # seconds
 
 # Auto-block settings
 AUTO_BLOCK_ATTACKS = True
@@ -56,6 +60,140 @@ syn_total_alerted_at = {}               # dst_port -> last_alert_timestamp
 port_sweep_window = defaultdict(list)   # src_ip -> [(ts, dport)]
 port_sweep_alerted_at = {}              # src_ip -> last_alert_timestamp
 blocked_at = {}                          # ip -> last_block_timestamp
+
+# ─────────────────────────────────────────────────────────────────────────────
+def _quote_windows(arg):
+    return f'"{str(arg).replace("\"", "\\\"")}"'
+
+
+def _detect_local_ip():
+    if MY_IP:
+        return MY_IP
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            ip = sock.getsockname()[0]
+            if ip:
+                return ip
+    except Exception:
+        pass
+
+    try:
+        return get_if_addr(conf.iface)
+    except Exception:
+        return "127.0.0.1"
+
+
+def _runtime_command(dashboard_url, packet_url, agent_name, my_ip):
+    script_path = os.path.abspath(__file__)
+    cmd = [
+        sys.executable,
+        script_path,
+        "--dashboard-url", dashboard_url,
+        "--packet-url", packet_url,
+        "--agent-name", agent_name,
+        "--my-ip", my_ip,
+    ]
+    return cmd
+
+
+def _windows_task_exists(name: str) -> bool:
+    result = subprocess.run(["schtasks", "/Query", "/TN", name], capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def _install_windows_task(name: str, task_run: str, trigger: str) -> None:
+    create_cmd = [
+        "schtasks", "/Create", "/F", "/SC", trigger,
+        "/TN", name,
+        "/TR", task_run,
+        "/RL", "HIGHEST",
+        "/RU", "SYSTEM",
+        "/DELAY", "0000:30",
+    ]
+    completed = subprocess.run(create_cmd, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "schtasks failed").strip())
+
+
+def install_autostart(dashboard_url, packet_url, agent_name, my_ip):
+    cmd = _runtime_command(dashboard_url, packet_url, agent_name, my_ip)
+
+    if os.name == "nt":
+        task_run = " ".join(_quote_windows(part) for part in cmd)
+        start_name = AUTOSTART_NAME
+        logon_name = f"{AUTOSTART_NAME}-Logon"
+        _install_windows_task(start_name, task_run, "ONSTART")
+        _install_windows_task(logon_name, task_run, "ONLOGON")
+        return f"Installed Windows startup tasks: {start_name}, {logon_name}"
+
+    service_name = f"{AUTOSTART_NAME}.service"
+    service_path = f"/etc/systemd/system/{service_name}"
+    exec_cmd = " ".join(f'"{part}"' for part in cmd)
+    service_body = "\n".join([
+        "[Unit]",
+        "Description=Recon Tool Victim Detection Agent",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"ExecStart={exec_cmd}",
+        "Restart=always",
+        "RestartSec=3",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target",
+        "",
+    ])
+
+    try:
+        with open(service_path, "w", encoding="utf-8") as handle:
+            handle.write(service_body)
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+        subprocess.run(["systemctl", "enable", "--now", service_name], check=True)
+    except PermissionError as exc:
+        raise RuntimeError("Permission denied writing systemd service; run as root/sudo.") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"systemctl failed: {exc}") from exc
+
+    return f"Installed Linux systemd service: {service_name}"
+
+
+def uninstall_autostart():
+    if os.name == "nt":
+        names = [AUTOSTART_NAME, f"{AUTOSTART_NAME}-Logon"]
+        for name in names:
+            subprocess.run(["schtasks", "/Delete", "/F", "/TN", name], capture_output=True, text=True)
+        return f"Removed Windows startup tasks: {', '.join(names)}"
+
+    service_name = f"{AUTOSTART_NAME}.service"
+    service_path = f"/etc/systemd/system/{service_name}"
+    try:
+        subprocess.run(["systemctl", "disable", "--now", service_name], check=False)
+        if os.path.exists(service_path):
+            os.remove(service_path)
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+    except PermissionError as exc:
+        raise RuntimeError("Permission denied removing systemd service; run as root/sudo.") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"systemctl failed: {exc}") from exc
+
+    return f"Removed Linux systemd service: {service_name}"
+
+
+def _autostart_installed():
+    if os.name == "nt":
+        start_name = AUTOSTART_NAME
+        logon_name = f"{AUTOSTART_NAME}-Logon"
+        return _windows_task_exists(start_name) and _windows_task_exists(logon_name)
+
+    service_name = f"{AUTOSTART_NAME}.service"
+    result = subprocess.run(["systemctl", "is-enabled", service_name],
+                            capture_output=True, text=True)
+    return result.returncode == 0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 def _find_ip_by_mac(mac, exclude_ip=None):
@@ -291,6 +429,62 @@ def on_packet(pkt):
 
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    global DASHBOARD_URL, PACKET_URL, AGENT_NAME, MY_IP
+
+    parser = argparse.ArgumentParser(description="Recon victim detection agent")
+    parser.add_argument("--dashboard-url", default=None)
+    parser.add_argument("--packet-url", default=None)
+    parser.add_argument("--agent-name", default=None)
+    parser.add_argument("--my-ip", default=None)
+    parser.add_argument("--install-autostart", action="store_true")
+    parser.add_argument("--uninstall-autostart", action="store_true")
+    parser.add_argument("--ensure-autostart", action="store_true")
+    args, _ = parser.parse_known_args()
+
+    if args.dashboard_url:
+        DASHBOARD_URL = args.dashboard_url
+    if args.packet_url:
+        PACKET_URL = args.packet_url
+    if args.agent_name:
+        AGENT_NAME = args.agent_name
+    if args.my_ip:
+        MY_IP = args.my_ip
+
+    MY_IP = _detect_local_ip()
+
+    if args.install_autostart and args.uninstall_autostart:
+        print("[ERR] choose only one of --install-autostart or --uninstall-autostart")
+        sys.exit(2)
+
+    if args.install_autostart:
+        try:
+            message = install_autostart(DASHBOARD_URL, PACKET_URL, AGENT_NAME, MY_IP)
+            print(f"[OK] {message}")
+            sys.exit(0)
+        except Exception as exc:
+            print(f"[ERR] {exc}")
+            sys.exit(1)
+
+    if args.uninstall_autostart:
+        try:
+            message = uninstall_autostart()
+            print(f"[OK] {message}")
+            sys.exit(0)
+        except Exception as exc:
+            print(f"[ERR] {exc}")
+            sys.exit(1)
+
+    ensure_autostart = args.ensure_autostart or os.environ.get("ENSURE_AUTOSTART", "").lower() in {
+        "1", "true", "yes"
+    }
+    if ensure_autostart:
+        try:
+            if not _autostart_installed():
+                message = install_autostart(DASHBOARD_URL, PACKET_URL, AGENT_NAME, MY_IP)
+                print(f"[OK] {message}")
+        except Exception as exc:
+            print(f"[ERR] Autostart install failed: {exc}")
+
     print("=" * 60)
     print("  Victim Agent — Network Intrusion Detection")
     print("=" * 60)

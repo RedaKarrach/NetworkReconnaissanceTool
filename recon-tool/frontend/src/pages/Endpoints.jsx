@@ -22,10 +22,12 @@ function donutStyle(active, total) {
 
 function osMeta(osName) {
   const os = String(osName || "unknown").toLowerCase();
-  if (os.includes("linux")) return { emoji: "LNX", className: "text-os-linux" };
-  if (os.includes("windows")) return { emoji: "WIN", className: "text-os-windows" };
-  if (os.includes("mac")) return { emoji: "MAC", className: "text-os-macos" };
-  return { emoji: "UNK", className: "text-text-tertiary" };
+  if (os.includes("linux") || os.includes("ubuntu") || os.includes("debian") || os.includes("kali") || os.includes("centos") || os.includes("fedora") || os.includes("red hat") || os.includes("rhel")) {
+    return { emoji: "🐧", className: "text-os-linux" };
+  }
+  if (os.includes("windows")) return { emoji: "🪟", className: "text-os-windows" };
+  if (os.includes("mac")) return { emoji: "🍎", className: "text-os-macos" };
+  return { emoji: "❓", className: "text-text-tertiary" };
 }
 
 function statusClass(status) {
@@ -36,9 +38,22 @@ function statusClass(status) {
 }
 
 export default function Endpoints() {
-  const { items: inventory, status } = useInventory();
-  const { items: registry } = useAgentRegistry();
+  const { items: inventory, status, deleteInventoryItem } = useInventory();
+  const { items: registry, deleteAgent } = useAgentRegistry();
   const [query, setQuery] = useState("");
+
+  async function handleDeleteEndpoint(agent) {
+    const confirmed = window.confirm(`Delete endpoint ${agent.agent_id}?`);
+    if (!confirmed) return;
+    
+    // Delete from inventory if it exists there
+    if (agent.inventory) {
+      await deleteInventoryItem({ agent_id: agent.agent_id });
+    } else {
+      // Delete from registry only
+      await deleteAgent({ agent_id: agent.agent_id });
+    }
+  }
 
   const merged = useMemo(() => {
     const map = new Map();
@@ -63,6 +78,8 @@ export default function Endpoints() {
         os_version: inv.os_version || "",
         last_seen: lastSeen,
         online,
+        inventory: inv,
+        registry: reg,
       };
     });
   }, [inventory, registry]);
@@ -177,6 +194,7 @@ export default function Endpoints() {
                 <th className="px-4 py-2 text-left">Operating system</th>
                 <th className="px-4 py-2 text-left">Last seen</th>
                 <th className="px-4 py-2 text-left">Status</th>
+                <th className="px-4 py-2 text-left">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -204,6 +222,14 @@ export default function Endpoints() {
                       <span className={`h-2 w-2 rounded-full ${row.online ? "bg-status-success" : "bg-status-offline"}`} />
                       {row.online ? "active" : "disconnected"}
                     </span>
+                  </td>
+                  <td className="px-4 py-2">
+                    <button
+                      onClick={() => handleDeleteEndpoint(row)}
+                      className="rounded-sm border border-border-danger px-2 py-1 text-xs text-threat-critical transition-colors duration-150 hover:bg-threat-critical/10"
+                    >
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}

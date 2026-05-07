@@ -55,6 +55,8 @@ export function useScan() {
     startIcmpRedirect:  (target_ip, spoofed_gateway, attacker_ip, destination_ip) =>
       call(() => apiPost("/api/attack/icmp-redirect/", { target_ip, spoofed_gateway, attacker_ip, destination_ip })),
     stopThread:         (thread_id)         => call(() => apiPost("/api/attack/stop/",          { thread_id })),
+    getThreads:         ()                  => call(() => apiGet("/api/threads/")),
+    getThreadStatus:    (thread_id)         => call(() => apiGet(`/api/threads/${thread_id}/`)),
     getResults:         (session_id)        => call(() => apiGet(`/api/results/${session_id}/`)),
     getPdfUrl:          (session_id)        => `${API_BASE}/api/report/${session_id}/pdf/`,
   };

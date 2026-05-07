@@ -1,8 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { useInventory } from "../hooks/useInventory";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
-
-const ONLINE_WINDOW_MS = 300000;
+import { useAgentHealth } from "../hooks/useAgentHealth";
 
 function fmtBytesGb(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
@@ -25,9 +24,16 @@ function statusClass(status) {
   return { dot: "bg-status-offline", text: "text-status-offline", label: "Disconnected" };
 }
 
+function agentHealthClass(status) {
+  if (status === "online") return { dot: "bg-status-success", text: "text-status-success", label: "Online" };
+  if (status === "offline") return { dot: "bg-status-danger", text: "text-status-danger", label: "Offline" };
+  return { dot: "bg-status-offline", text: "text-text-tertiary", label: "Unknown" };
+}
+
 export default function Inventory() {
   const { items, status, error, refresh, deleteInventoryItem } = useInventory();
   const { items: agents, error: agentError, addAgent, deleteAgent } = useAgentRegistry();
+  const { items: healthItems, error: healthError } = useAgentHealth();
   const [query, setQuery] = useState("");
   const [form, setForm] = useState({ agent_id: "", hostname: "", ip: "", os_name: "" });
   const [saving, setSaving] = useState(false);
@@ -54,6 +60,14 @@ export default function Inventory() {
     });
     return map;
   }, [items]);
+
+  const healthByAgent = useMemo(() => {
+    const map = new Map();
+    (healthItems || []).forEach((item) => {
+      if (item?.agent_id) map.set(item.agent_id, item);
+    });
+    return map;
+  }, [healthItems]);
 
   async function handleAddAgent(e) {
     e.preventDefault();
@@ -114,6 +128,12 @@ export default function Inventory() {
         </div>
       )}
 
+      {healthError && (
+        <div className="rounded-md border border-border-default bg-bg-elevated/70 px-4 py-3 text-sm text-text-tertiary">
+          Health feed unavailable: {healthError}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card-premium depth-rail p-4">
           <div className="mb-3 text-xs uppercase tracking-widest text-text-tertiary">Add Agent</div>
@@ -151,7 +171,7 @@ export default function Inventory() {
                 {saving ? "Saving..." : "Add Agent"}
               </button>
               <div className="text-xs text-text-tertiary">
-                This only registers the agent for visualization. The VM must run inventory_agent.py.
+                Optional manual registry. For full automation, install VM autostart with inventory_agent.py --install-autostart.
               </div>
             </div>
           </form>
@@ -165,19 +185,26 @@ export default function Inventory() {
             <div className="space-y-2">
               {agents.map((a) => {
                 const live = inventoryByAgent.get(a.agent_id) || inventoryByAgent.get(a.hostname) || inventoryByAgent.get(a.ip);
-                const lastSeen = live?.last_seen ? new Date(live.last_seen) : null;
-                const online = lastSeen ? Date.now() - lastSeen.getTime() < ONLINE_WINDOW_MS : false;
+                const health = healthByAgent.get(a.agent_id) || {};
+                const lastSeenValue = health.last_seen || live?.last_seen || null;
+                const lastSeen = lastSeenValue ? new Date(lastSeenValue) : null;
+                const healthUi = agentHealthClass(health.health_status);
+                const offlineFor = typeof health.offline_for_sec === "number" ? health.offline_for_sec : null;
                 return (
                   <div key={a.agent_id} className="agent-chip flex items-center gap-3">
-                    <span className={`h-2 w-2 rounded-full ${online ? "bg-status-success" : "bg-status-offline"}`} />
+                    <span className={`h-2 w-2 rounded-full ${healthUi.dot}`} />
                     <div className="flex-1 min-w-0">
                       <div className="truncate text-sm text-text-primary">{a.agent_id}</div>
-                      <div className="truncate text-xs text-text-tertiary">
+                      <div className={`truncate text-xs ${healthUi.text}`}>
                         {a.os_name || "unknown"} · {a.ip || "no ip"}
                       </div>
                     </div>
-                    <div className="font-mono text-xs text-text-tertiary">
-                      {lastSeen ? lastSeen.toLocaleTimeString() : "—"}
+                    <div className="flex flex-col items-end text-right">
+                      <div className={`font-mono text-xs ${healthUi.text}`}>{healthUi.label}</div>
+                      <div className="font-mono text-xs text-text-tertiary">
+                        {lastSeen ? lastSeen.toLocaleTimeString() : "—"}
+                        {offlineFor ? ` · ${offlineFor}s` : ""}
+                      </div>
                     </div>
                     <button
                       onClick={() => deleteAgent({ agent_id: a.agent_id })}
@@ -195,7 +222,7 @@ export default function Inventory() {
 
       {filtered.length === 0 ? (
         <div className="py-10 text-center text-sm text-text-tertiary">
-          No inventory yet — start the inventory agent on your VMs.
+          No inventory yet — install the autostart agent on your VMs.
         </div>
       ) : (
         <div className="panel-premium endpoint-table-shell overflow-hidden">

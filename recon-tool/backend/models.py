@@ -53,7 +53,14 @@ class Alert(Document):
     message     = StringField()
     timestamp   = DateTimeField(default=datetime.utcnow)
 
-    meta = {"collection": "alerts"}
+    meta = {
+        "collection": "alerts",
+        "indexes": [
+            "session",
+            "timestamp",
+            "type",
+        ]
+    }
 
 
 class PacketLog(Document):
@@ -68,7 +75,15 @@ class PacketLog(Document):
     payload     = StringField(default="")
     timestamp   = DateTimeField(default=datetime.utcnow)
 
-    meta = {"collection": "packet_logs"}
+    meta = {
+        "collection": "packet_logs",
+        "indexes": [
+            "session",
+            "timestamp",
+            "src_ip",
+            "dst_ip",
+        ]
+    }
 
 
 class AttackLog(Document):
@@ -82,7 +97,10 @@ class AttackLog(Document):
     started_at  = DateTimeField(default=datetime.utcnow)
     stopped_at  = DateTimeField()
 
-    meta = {"collection": "attack_logs"}
+    meta = {
+        "collection": "attack_logs",
+        "indexes": ["session", "attack_type", "target_ip", "started_at"],
+    }
 
 
 class HostInventory(Document):
@@ -122,9 +140,12 @@ class AgentRegistry(Document):
     ip         = StringField()
     os_name    = StringField()
     notes      = StringField()
+    last_seen  = DateTimeField()
+    health_status = StringField(default="unknown")  # online | offline | unknown
+    health_notified_at = DateTimeField()
     created_at = DateTimeField(default=datetime.utcnow)
 
     meta = {
         "collection": "agent_registry",
-        "indexes": ["agent_id", "hostname", "ip", "created_at"],
+        "indexes": ["agent_id", "hostname", "ip", "created_at", "last_seen", "health_status"],
     }

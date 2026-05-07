@@ -18,7 +18,7 @@ import threading
 from datetime import datetime
 from scapy.all import (
     Ether, ARP, IP, TCP, ICMP,
-    sendp, send, RandShort, conf
+    sendp, send, RandShort, conf, get_if_addr
 )
 
 conf.verb = 0  # suppress Scapy stdout
@@ -86,6 +86,10 @@ def arp_spoof(
         packets_sent["count"] += 2
 
         if on_packet:
+            try:
+                attacker_ip = get_if_addr(conf.iface)
+            except Exception:
+                attacker_ip = "attacker"
             on_packet({
                 "summary": (
                     f"ARP poison → {target_ip} (claiming {gateway_ip}) | "
@@ -94,10 +98,11 @@ def arp_spoof(
                 ),
                 "flags": "ARP-SPOOF",
                 "ttl": 0,
-                "src_ip": "attacker",
-                "dst_ip": f"{target_ip} / {gateway_ip}",
+                "src_ip": attacker_ip,
+                "dst_ip": target_ip,
                 "protocol": "ARP",
-                "timestamp": _ts()
+                "timestamp": _ts(),
+                "attacker_ip": attacker_ip,
             })
 
         time.sleep(interval)
@@ -162,6 +167,10 @@ def syn_flood(
             packets_sent["count"] += 1
 
         if on_packet:
+            try:
+                attacker_ip = get_if_addr(conf.iface)
+            except Exception:
+                attacker_ip = "attacker"
             on_packet({
                 "summary": (
                     f"SYN flood → {target_ip}:{target_port} | "
@@ -172,7 +181,8 @@ def syn_flood(
                 "src_ip": "spoofed",
                 "dst_ip": target_ip,
                 "protocol": "TCP",
-                "timestamp": _ts()
+                "timestamp": _ts(),
+                "attacker_ip": attacker_ip,
             })
 
         time.sleep(interval)
@@ -246,6 +256,10 @@ def icmp_redirect(
             packets_sent["count"] += 1
 
         if on_packet:
+            try:
+                real_attacker_ip = get_if_addr(conf.iface)
+            except Exception:
+                real_attacker_ip = attacker_ip
             on_packet({
                 "summary": (
                     f"ICMP Redirect (forged from {spoofed_gateway}) → "
@@ -254,10 +268,11 @@ def icmp_redirect(
                 ),
                 "flags": "ICMP-REDIRECT",
                 "ttl": 64,
-                "src_ip": spoofed_gateway,
+                "src_ip": real_attacker_ip,
                 "dst_ip": target_ip,
                 "protocol": "ICMP",
-                "timestamp": _ts()
+                "timestamp": _ts(),
+                "attacker_ip": attacker_ip,
             })
 
         time.sleep(interval)
