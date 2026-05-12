@@ -14,17 +14,50 @@ const OS_COLORS = {
   unknown: "var(--color-os-unknown)",
 };
 
+const RISK_COLORS = {
+  critical: "var(--color-threat-critical)",
+  high: "var(--color-threat-high)",
+  medium: "var(--color-threat-medium)",
+  low: "var(--color-threat-low)",
+};
+
+const RISK_CLASSES = {
+  critical: "bg-red-600 ring-2 ring-red-500 glow-red",
+  high: "bg-orange-500 ring-2 ring-orange-400 glow-orange",
+  medium: "bg-yellow-400 ring-2 ring-yellow-300",
+  low: "bg-green-500 ring-2 ring-green-400",
+};
+
+function normalizeOsLabel(value) {
+  const label = String(value || "").trim();
+  return label || "unknown";
+}
+
 function getColor(os) {
   const value = String(os || "").toLowerCase();
   if (value.includes("linux") || value.includes("ubuntu") || value.includes("debian") || value.includes("kali") || value.includes("centos") || value.includes("fedora") || value.includes("red hat") || value.includes("rhel")) {
     return OS_COLORS.linux;
   }
-  if (value.includes("windows")) return OS_COLORS.windows;
-  if (value.includes("mac")) return OS_COLORS.macos;
+  if (value.includes("windows") || value.includes("win") || value.includes("microsoft")) return OS_COLORS.windows;
+  if (value.includes("macos") || value.includes("os x") || value.includes("darwin") || value.includes("apple") || value.includes("mac")) return OS_COLORS.macos;
   return OS_COLORS.unknown;
 }
 
-export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, selectedHostId = null }) {
+function normalizeRiskLevel(value) {
+  const level = String(value || "").toLowerCase();
+  if (level === "critical" || level === "high" || level === "medium" || level === "low") return level;
+  return "low";
+}
+
+function riskClassFor(level) {
+  return RISK_CLASSES[normalizeRiskLevel(level)] || RISK_CLASSES.low;
+}
+
+function riskColorFor(level, fallback) {
+  return RISK_COLORS[normalizeRiskLevel(level)] || fallback;
+}
+
+export default function NetworkMap({ hosts = [], riskScores = {}, onSelectHost, maxHosts = 200, selectedHostId = null }) {
   const svgRef = useRef(null);
   const tooltipRef = useRef(null);
   const zoomInRef = useRef(null);
@@ -87,6 +120,9 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
     const trimmedHosts = uniqueHosts.slice(0, maxHosts);
     const nodes = trimmedHosts.map((h) => {
       const nodeKey = h._nodeKey || h.ip;
+      const riskInfo = riskScores?.[h.ip] || null;
+      const riskLevel = normalizeRiskLevel(riskInfo?.level);
+      const osLabel = normalizeOsLabel(h.os_guess || h.os_name || h.os);
       const previous = positionRef.current.get(nodeKey) || {};
       return {
         ...h,
@@ -94,7 +130,10 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
         label: h.hostname || h.ip,
         ip: h.ip,
         mac: h.mac,
-        os: h.os_guess || h.os || "unknown",
+        os: osLabel,
+        risk_level: riskLevel,
+        risk_ports: Number(riskInfo?.riskyPortsCount) || 0,
+        risk_vulns: Number(riskInfo?.vulnCount) || 0,
         type: "host",
         x: previous.x,
         y: previous.y,
@@ -150,12 +189,16 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
         if (!tooltipRef.current || d.type !== "host") return;
 
         const openPorts = Array.isArray(d.open_ports) ? d.open_ports.length : (Number(d.open_ports) || 0);
+        const riskLevel = normalizeRiskLevel(d.risk_level);
+        const riskPorts = Number(d.risk_ports) || 0;
+        const riskVulns = Number(d.risk_vulns) || 0;
         tooltipRef.current.innerHTML = `
           <div class="font-mono text-sm font-bold text-text-primary">${d.ip || d.label}</div>
           <div class="mt-1 font-mono text-xs text-text-tertiary">${d.mac || "N/A"}</div>
           <div class="mt-1 text-sm text-text-secondary">${d.hostname || "unknown-host"}</div>
           <div class="mt-1 text-sm text-text-secondary">${d.os || "unknown"}</div>
           <div class="text-sm text-text-tertiary">open ports: ${openPorts}</div>
+          <div class="text-sm text-text-tertiary">Risk: ${riskLevel} | Ports: ${riskPorts} | Vulns: ${riskVulns}</div>
         `;
         tooltipRef.current.style.opacity = "1";
       })
@@ -187,8 +230,8 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
       .attr("class", "node-core")
       .attr("r", (d) => (selectedHostId && d.ip === selectedHostId ? 24 : 20))
       .attr("fill", (d) => (d.type === "scanner" ? "var(--color-accent-primary)" : getColor(d.os)))
-      .attr("stroke", "rgba(255,255,255,0.15)")
-      .attr("stroke-width", 1.5);
+      .attr("stroke", (d) => riskColorFor(d.risk_level, "rgba(255,255,255,0.25)"))
+      .attr("stroke-width", 2);
 
     // Icons / labels inside circle
     node.append("text")
@@ -251,11 +294,11 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
       if (zoomOutRef.current) d3.select(zoomOutRef.current).on("click", null);
       if (zoomResetRef.current) d3.select(zoomResetRef.current).on("click", null);
     };
-  }, [hosts, maxHosts, onSelectHost]);
+  }, [hosts, maxHosts, onSelectHost, riskScores]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-lg bg-bg-app">
-      <svg ref={svgRef} className="h-full w-full" style={{ minHeight: 400 }} />
+    <div className="relative flex h-full w-full flex-col overflow-hidden rounded-lg bg-bg-app">
+      <svg ref={svgRef} className="h-full w-full flex-1" style={{ minHeight: 400 }} />
 
       <div
         ref={tooltipRef}
@@ -263,7 +306,7 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
         style={{ opacity: 0 }}
       />
 
-      <div className="absolute bottom-4 right-4 z-20 rounded-md border border-border-elevated bg-bg-elevated/80 p-2 backdrop-blur">
+      <div className="absolute bottom-20 right-4 z-20 rounded-md border border-border-elevated bg-bg-elevated/80 p-2 backdrop-blur">
         <div className="flex items-center gap-2 text-xs text-text-secondary">
           <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OS_COLORS.linux }} />
           Linux
@@ -279,6 +322,28 @@ export default function NetworkMap({ hosts = [], onSelectHost, maxHosts = 200, s
         <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
           <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OS_COLORS.unknown }} />
           unknown
+        </div>
+      </div>
+
+      <div className="border-t border-border-elevated/60 bg-bg-elevated/60 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-text-secondary">
+          <span className="text-text-tertiary">Risk legend:</span>
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-red-600 ring-2 ring-red-500 glow-red" />
+            Critical
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-orange-500 ring-2 ring-orange-400 glow-orange" />
+            High
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-yellow-400 ring-2 ring-yellow-300" />
+            Medium
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-green-500 ring-2 ring-green-400" />
+            Low
+          </div>
         </div>
       </div>
 

@@ -37,10 +37,27 @@ class PortResult(Document):
     port        = IntField(required=True)
     protocol    = StringField(default="tcp")       # tcp | udp
     status      = StringField(default="filtered")  # open | closed | filtered
+    service     = StringField(default="")
     banner      = StringField(default="")
     timestamp   = DateTimeField(default=datetime.utcnow)
 
     meta = {"collection": "port_results"}
+
+
+class HostRiskScore(Document):
+    """Calculated risk score for a host IP based on observed signals."""
+    ip                  = StringField(required=True)
+    risky_port_count    = IntField(default=0)
+    vulnerability_count = IntField(default=0)
+    failed_login_count  = IntField(default=0)
+    risk_score          = IntField(default=0)  # 0-100
+    risk_level          = StringField(default="low", choices=("critical", "high", "medium", "low"))
+    last_updated        = DateTimeField(default=datetime.utcnow)
+
+    meta = {
+        "collection": "host_risk_scores",
+        "indexes": ["ip", "last_updated"],
+    }
 
 
 class Alert(Document):
@@ -100,6 +117,32 @@ class AttackLog(Document):
     meta = {
         "collection": "attack_logs",
         "indexes": ["session", "attack_type", "target_ip", "started_at"],
+    }
+
+
+class AuditLog(Document):
+    """Audit trail for scan/attack actions and alert generation."""
+    action = StringField(
+        required=True,
+        choices=(
+            "scan_started",
+            "scan_completed",
+            "fingerprint_run",
+            "attack_initiated",
+            "alert_generated",
+        ),
+    )
+    action_detail = StringField(default="{}")
+    initiated_by = StringField(default="admin")
+    initiated_at = DateTimeField(default=datetime.utcnow)
+    status = StringField(required=True, choices=("success", "failure"))
+    error_message = StringField()
+    duration_ms = IntField(default=0)
+    metadata = StringField(default="{}")
+
+    meta = {
+        "collection": "audit_logs",
+        "indexes": ["initiated_at", "action", "status"],
     }
 
 

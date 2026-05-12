@@ -7,6 +7,7 @@ import { useScan } from "../hooks/useScan";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useInventory } from "../hooks/useInventory";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
+import { API_BASE } from "../lib/runtimeConfig";
 
 function RadarIcon({ className = "h-5 w-5" }) {
   return (
@@ -387,6 +388,7 @@ export default function Dashboard({ onSessionStart }) {
   const [fpIp, setFpIp] = useState("192.168.56.20");
   const [activeTab, setActiveTab] = useState("map");
   const [selectedEndpointIp, setSelectedEndpointIp] = useState(null);
+  const [riskScores, setRiskScores] = useState({});
 
   const [runningScanType, setRunningScanType] = useState(null);
   const [completedScanType, setCompletedScanType] = useState(null);
@@ -430,7 +432,6 @@ export default function Dashboard({ onSessionStart }) {
     const byKey = new Map();
     const byIp = new Map();
     const cloneIdentity = new Set();
-    const hasRegistry = Array.isArray(registryItems) && registryItems.length > 0;
 
     const addEndpoint = (endpoint) => {
       const key = normalizeToken(endpoint.agent_id || endpoint.hostname || endpoint.ip);
@@ -440,6 +441,27 @@ export default function Dashboard({ onSessionStart }) {
       if (!byIp.has(endpoint.ip)) byIp.set(endpoint.ip, []);
       byIp.get(endpoint.ip).push(endpoint);
       return endpoint;
+    };
+
+    const moveEndpointIp = (endpoint, nextIp) => {
+      const normalizedNextIp = normalizeIp(nextIp);
+      const currentIp = normalizeIp(endpoint.ip);
+      if (!normalizedNextIp || currentIp === normalizedNextIp) return;
+
+      const currentBucket = byIp.get(currentIp) || [];
+      const currentIndex = currentBucket.indexOf(endpoint);
+      if (currentIndex >= 0) currentBucket.splice(currentIndex, 1);
+      if (!currentBucket.length) {
+        byIp.delete(currentIp);
+      } else {
+        byIp.set(currentIp, currentBucket);
+      }
+
+      endpoint.ip = normalizedNextIp;
+      if (!byIp.has(normalizedNextIp)) byIp.set(normalizedNextIp, []);
+      if (!byIp.get(normalizedNextIp).includes(endpoint)) {
+        byIp.get(normalizedNextIp).push(endpoint);
+      }
     };
 
     // Seed with registered endpoints only.
@@ -498,6 +520,10 @@ export default function Dashboard({ onSessionStart }) {
       }
 
       if (!endpoint) return;
+      const preferredIp = pickPrimaryEndpointIp(item?.ips) || endpoint.ip;
+      if (preferredIp && normalizeIp(endpoint.ip) !== preferredIp) {
+        moveEndpointIp(endpoint, preferredIp);
+      }
       endpoint.hostname = item.hostname || endpoint.hostname;
       endpoint.mac = (Array.isArray(item.macs) && item.macs[0]) || endpoint.mac;
       endpoint.os_guess = [item.os_name, item.os_version].filter(Boolean).join(" ") || endpoint.os_guess;
@@ -513,7 +539,9 @@ export default function Dashboard({ onSessionStart }) {
       targets.forEach((endpoint) => {
         endpoint.hostname = host.hostname || endpoint.hostname;
         endpoint.mac = host.mac || endpoint.mac;
-        endpoint.os_guess = host.os_guess || endpoint.os_guess;
+        if (!endpoint.os_guess || String(endpoint.os_guess).toLowerCase() === "unknown") {
+          endpoint.os_guess = host.os_guess || endpoint.os_guess;
+        }
         endpoint.source_tags.add("discovery");
       });
     });
@@ -523,7 +551,9 @@ export default function Dashboard({ onSessionStart }) {
       if (!isUsableEndpointIp(ip)) return;
       const targets = byIp.get(ip) || [];
       targets.forEach((endpoint) => {
-        endpoint.os_guess = result.os_guess || endpoint.os_guess;
+        if (!endpoint.os_guess || String(endpoint.os_guess).toLowerCase() === "unknown") {
+          endpoint.os_guess = result.os_guess || endpoint.os_guess;
+        }
         endpoint.confidence = toUnitConfidence(result.confidence ?? endpoint.confidence);
         endpoint.source_tags.add("fingerprint");
       });
@@ -558,6 +588,70 @@ export default function Dashboard({ onSessionStart }) {
       }))
       .sort((a, b) => a.ip.localeCompare(b.ip));
   }, [ws.hosts, ws.osResults, ws.portResults, inventoryItems, registryItems]);
+
+  useEffect(() => {
+    if (!endpointHosts.length) {
+      setRiskScores({});
+      return;
+    }
+
+    const controller = new AbortController();
+    let canceled = false;
+
+    async function loadRiskScores() {
+      const ips = Array.from(new Set(endpointHosts.map((host) => normalizeIp(host?.ip))))
+        .filter((ip) => isUsableEndpointIp(ip));
+
+      if (!ips.length) {
+        if (!canceled) setRiskScores({});
+        return;
+      }
+
+      const results = await Promise.all(ips.map(async (ip) => {
+        try {
+          const res = await fetch(`${API_BASE}/api/hosts/${encodeURIComponent(ip)}/risk-score/`, {
+            signal: controller.signal,
+          });
+          if (!res.ok) return null;
+          const data = await res.json();
+          const breakdown = data?.breakdown || {};
+          return {
+            ip,
+            score: Number(data?.risk_score) || 0,
+            level: normalizeSeverity(data?.risk_level),
+            riskyPortsCount: Array.isArray(breakdown?.risky_ports) ? breakdown.risky_ports.length : 0,
+            vulnCount: Array.isArray(breakdown?.vulns) ? breakdown.vulns.length : 0,
+            failedLogins: Number(breakdown?.failed_logins) || 0,
+          };
+        } catch (err) {
+          if (err?.name === "AbortError") return null;
+          return null;
+        }
+      }));
+
+      if (canceled) return;
+      setRiskScores((prev) => {
+        const next = { ...prev };
+        results.forEach((item) => {
+          if (!item) return;
+          next[item.ip] = {
+            score: item.score,
+            level: item.level,
+            riskyPortsCount: item.riskyPortsCount,
+            vulnCount: item.vulnCount,
+            failedLogins: item.failedLogins,
+          };
+        });
+        return next;
+      });
+    }
+
+    loadRiskScores();
+    return () => {
+      canceled = true;
+      controller.abort();
+    };
+  }, [endpointHosts]);
 
   const handleSelectEndpoint = useCallback((host) => {
     if (!host?.ip) return;
@@ -899,6 +993,7 @@ export default function Dashboard({ onSessionStart }) {
                       hosts={endpointHosts}
                       selectedHostId={selectedEndpoint?.ip || null}
                       onSelectHost={handleSelectEndpoint}
+                      riskScores={riskScores}
                     />
                   </div>
 

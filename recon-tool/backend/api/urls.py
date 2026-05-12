@@ -11,6 +11,9 @@ from .views import (
     InboundPacketView,
     SessionAlertsView,
     SessionPacketsView,
+    MitreMappingView,
+    HostRiskScoreView,
+    AuditLogView,
 )
 
 try:
@@ -46,7 +49,16 @@ urlpatterns = [
     path("agents/registry/",         AgentRegistryView.as_view()),
     path("agents/health/",           AgentHealthView.as_view()),
 
+    # MITRE mapping
+    path("mitre-mapping/",         MitreMappingView.as_view()),
+
     # Results & reports
     path("results/<str:session_id>/",    SessionResultsView.as_view()),
     path("report/<str:session_id>/pdf/", PDFReportView.as_view()),
+
+    # Host risk scores
+    path("hosts/<str:ip>/risk-score/", HostRiskScoreView.as_view()),
+
+    # Audit logs
+    path("audit-logs/", AuditLogView.as_view()),
 ] + ([path("attack/icmp-redirect/", ICMPRedirectView.as_view())] if _has_icmp else [])

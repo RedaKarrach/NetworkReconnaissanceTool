@@ -399,6 +399,56 @@
   }
 }
 
+/* Risk glow helpers for SVG nodes */
+.glow-red {
+  filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.6));
+}
+
+.glow-orange {
+  filter: drop-shadow(0 0 8px rgba(251, 146, 60, 0.55));
+}
+
+.node-core.bg-red-600 {
+  fill: #dc2626;
+}
+
+.node-core.bg-orange-500 {
+  fill: #f97316;
+}
+
+.node-core.bg-yellow-400 {
+  fill: #facc15;
+}
+
+.node-core.bg-green-500 {
+  fill: #22c55e;
+}
+
+.node-core.ring-2,
+.node-ring.ring-2 {
+  stroke-width: 2;
+}
+
+.node-core.ring-red-500,
+.node-ring.ring-red-500 {
+  stroke: #ef4444;
+}
+
+.node-core.ring-orange-400,
+.node-ring.ring-orange-400 {
+  stroke: #fb923c;
+}
+
+.node-core.ring-yellow-300,
+.node-ring.ring-yellow-300 {
+  stroke: #fde047;
+}
+
+.node-core.ring-green-400,
+.node-ring.ring-green-400 {
+  stroke: #4ade80;
+}
+
 @keyframes count-up {
   0% {
     transform: translateY(4px);
@@ -552,7 +602,7 @@
   }
 
   .tilt-3d-soft:hover {
-    transform: translateY(-4px) rotateX(3deg) rotateY(-2deg) translateZ(6px);
+    transform: none;
   }
 
   .depth-float {
@@ -789,7 +839,7 @@
   }
 
   .panel-premium:hover {
-    transform: translateY(-4px) rotateX(2.4deg) rotateY(-1.8deg) translateZ(8px);
+    transform: none;
   }
 
   /* ──── BUTTON GLASS ──── */

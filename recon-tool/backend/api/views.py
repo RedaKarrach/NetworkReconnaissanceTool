@@ -11,16 +11,18 @@ import platform
 import subprocess
 import ipaddress
 import re
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timezone, timedelta
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.conf import settings
 
-from models import ScanSession, Host, PortResult, Alert, PacketLog, AttackLog, HostInventory, AgentRegistry
+from models import ScanSession, Host, PortResult, Alert, PacketLog, AttackLog, HostInventory, AgentRegistry, AuditLog
 from threads.manager import start_thread, stop_thread, get_status, list_threads, cleanup_dead_threads
 from websockets.consumers import broadcast_packet, broadcast_alert, broadcast_status, broadcast_inventory
+from audit import audit_log
 
 # Import scanner modules
 from scanner.discovery   import arp_sweep
@@ -117,12 +119,16 @@ def _check_packet_rate_limit(session_id):
 
 def _emit_alert(session, alert_dict):
     """Broadcast alert to session and live SOC stream, with trimming."""
+    alert_dict = detection.enrich_alert_with_mitre(alert_dict)
     payload = {
         "event_type": "alert",
         **alert_dict,
     }
-    broadcast_alert(session.session_id, payload)
-    broadcast_alert("live", payload)
+    try:
+        broadcast_alert(session.session_id, payload)
+        broadcast_alert("live", payload)
+    except Exception:
+        pass
     # Also broadcast a packet-like event so alerts appear in the packet inspector
     try:
         pkt_like = {
@@ -141,6 +147,74 @@ def _emit_alert(session, alert_dict):
         pass
 
     _trim_alert_logs(session)
+
+
+class MitreMappingView(APIView):
+    """GET /api/mitre-mapping/"""
+
+    def get(self, request):
+        return Response(detection.get_mitre_mapping(), status=200)
+
+
+def _safe_json_loads(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return {"raw": str(value)}
+
+
+class AuditLogView(APIView):
+    """GET /api/audit-logs/?limit=100&offset=0&action=scan_started&hours=24"""
+
+    def get(self, request):
+        def _to_int(value, default, minimum=None, maximum=None):
+            try:
+                numeric = int(value)
+            except (TypeError, ValueError):
+                numeric = default
+            if minimum is not None:
+                numeric = max(minimum, numeric)
+            if maximum is not None:
+                numeric = min(maximum, numeric)
+            return numeric
+
+        limit = _to_int(request.query_params.get("limit"), 100, minimum=1, maximum=500)
+        offset = _to_int(request.query_params.get("offset"), 0, minimum=0)
+        action = request.query_params.get("action")
+        status_filter = request.query_params.get("status")
+        hours = request.query_params.get("hours")
+
+        logs = AuditLog.objects
+        if action:
+            logs = logs(action=action)
+        if status_filter:
+            logs = logs(status=status_filter)
+
+        hours_value = _to_int(hours, 0, minimum=0)
+        if hours_value:
+            cutoff = datetime.utcnow() - timedelta(hours=hours_value)
+            logs = logs(initiated_at__gte=cutoff)
+
+        total = logs.count()
+        entries = logs.order_by("-initiated_at").skip(offset).limit(limit)
+
+        results = []
+        for entry in entries:
+            results.append({
+                "action": entry.action,
+                "initiated_by": entry.initiated_by,
+                "initiated_at": entry.initiated_at.isoformat() if entry.initiated_at else None,
+                "status": entry.status,
+                "duration_ms": entry.duration_ms,
+                "detail": _safe_json_loads(entry.action_detail),
+                "error_message": entry.error_message,
+            })
+
+        return Response({"count": total, "results": results}, status=200)
 
 
 def _get_live_session():
@@ -169,6 +243,18 @@ def _request_client_ip(request):
     if xff:
         return xff.split(",", 1)[0].strip()
     return request.META.get("REMOTE_ADDR", "")
+
+
+def _initiated_by(request):
+    """Resolve username for audit logging."""
+    try:
+        user = getattr(request, "user", None)
+        if user and getattr(user, "is_authenticated", False):
+            name = user.get_username() if hasattr(user, "get_username") else str(user)
+            return name or "admin"
+    except Exception:
+        pass
+    return "admin"
 
 
 def _is_ip_reachable(ip: str) -> bool:
@@ -301,8 +387,11 @@ class HostDiscoveryView(APIView):
             return Response({"error": "subnet required"}, status=400)
 
         session, session_id = _new_session(subnet=subnet)
+        initiated_by = _initiated_by(request)
+        thread_id_ref = {"id": None}
 
         def _run(stop_flag):
+            start_time = time.perf_counter()
             def on_host(ip, mac):
                 host = Host(session=session, ip=ip, mac=mac)
                 host.save()
@@ -318,26 +407,75 @@ class HostDiscoveryView(APIView):
             def on_pkt(pkt_dict):
                 _log_packet(session, pkt_dict)
 
-            arp_sweep(subnet, stop_flag, session_id,
-                      on_host=on_host, on_packet=on_pkt)
+            try:
+                arp_sweep(subnet, stop_flag, session_id,
+                          on_host=on_host, on_packet=on_pkt)
 
-            session.status = "complete"
-            session.save()
-            broadcast_status(session_id, "complete",
-                             {"message": "Host discovery finished"})
-            _emit_alert(session, {
-                "type": "host_discovery_complete",
-                "src_ip": "scanner",
-                "dst_ip": subnet,
-                "severity": "low",
-                "message": f"Host discovery completed for {subnet}",
-                "timestamp": datetime.utcnow().isoformat(),
-            })
+                session.status = "complete"
+                session.save()
+                broadcast_status(session_id, "complete",
+                                 {"message": "Host discovery finished"})
+                _emit_alert(session, {
+                    "type": "host_discovery_complete",
+                    "src_ip": "scanner",
+                    "dst_ip": subnet,
+                    "severity": "low",
+                    "message": f"Host discovery completed for {subnet}",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                host_count = Host.objects(session=session).count()
+                audit_log(
+                    "scan_completed",
+                    {
+                        "scan_type": "host_discovery",
+                        "target_subnet": subnet,
+                        "result_count": host_count,
+                    },
+                    "success",
+                    duration_ms,
+                    initiated_by=initiated_by,
+                    metadata={
+                        "session_id": session_id,
+                        "thread_id": thread_id_ref["id"],
+                        "host_count": host_count,
+                    },
+                )
+            except Exception as exc:
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                session.status = "failed"
+                session.save()
+                broadcast_status(session_id, "failed",
+                                 {"message": "Host discovery failed"})
+                audit_log(
+                    "scan_completed",
+                    {
+                        "scan_type": "host_discovery",
+                        "target_subnet": subnet,
+                        "result_count": 0,
+                    },
+                    "failure",
+                    duration_ms,
+                    initiated_by=initiated_by,
+                    error_message=str(exc),
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
 
         thread_id = start_thread(
             target=_run,
             name=f"discovery-{session_id}",
             meta={"kind": "scan", "scan_type": "host_discovery", "session_id": session_id, "target": subnet},
+        )
+        thread_id_ref["id"] = thread_id
+
+        audit_log(
+            "scan_started",
+            {"scan_type": "host_discovery", "target_subnet": subnet},
+            "success",
+            0,
+            initiated_by=initiated_by,
+            metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
         _emit_alert(session, {
@@ -380,6 +518,10 @@ class PortScanView(APIView):
             return Response({"error": "ip unreachable"}, status=404)
 
         session, session_id = _new_session()
+        initiated_by = _initiated_by(request)
+        thread_id_ref = {"id": None}
+        thread_id_ref = {"id": None}
+        thread_id_ref = {"id": None}
 
         # Find or create a Host record for this IP
         host_doc = Host.objects(session=session, ip=ip).first()
@@ -388,12 +530,14 @@ class PortScanView(APIView):
             host_doc.save()
 
         def _run(stop_flag):
+            start_time = time.perf_counter()
             def on_result(res):
                 PortResult(
                     host     = host_doc,
                     port     = res["port"],
                     protocol = res["protocol"],
                     status   = res["status"],
+                    service  = res.get("service", ""),
                     banner   = res.get("banner", "")
                 ).save()
                 packet = {
@@ -415,27 +559,85 @@ class PortScanView(APIView):
             def on_pkt(pkt_dict):
                 _log_packet(session, pkt_dict)
 
-            run_port_scan(ip, ports, stop_flag, session_id,
-                          protocol=protocol,
-                          on_result=on_result, on_packet=on_pkt)
+            try:
+                run_port_scan(ip, ports, stop_flag, session_id,
+                              protocol=protocol,
+                              on_result=on_result, on_packet=on_pkt)
 
-            session.status = "complete"
-            session.save()
-            broadcast_status(session_id, "complete",
-                             {"message": "Port scan finished"})
-            _emit_alert(session, {
-                "type": "port_scan_complete",
-                "src_ip": "scanner",
-                "dst_ip": ip,
-                "severity": "low",
-                "message": f"Port scan completed for {ip}",
-                "timestamp": datetime.utcnow().isoformat(),
-            })
+                session.status = "complete"
+                session.save()
+                broadcast_status(session_id, "complete",
+                                 {"message": "Port scan finished"})
+                _emit_alert(session, {
+                    "type": "port_scan_complete",
+                    "src_ip": "scanner",
+                    "dst_ip": ip,
+                    "severity": "low",
+                    "message": f"Port scan completed for {ip}",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+
+                try:
+                    detection.calculate_host_risk(ip)
+                except Exception:
+                    pass
+
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                audit_log(
+                    "scan_completed",
+                    {
+                        "scan_type": "port_scan",
+                        "target_ip": ip,
+                        "port_list": list(ports)[:200],
+                        "port_count": len(ports),
+                        "result_count": PortResult.objects(host=host_doc).count(),
+                    },
+                    "success",
+                    duration_ms,
+                    initiated_by=initiated_by,
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
+            except Exception as exc:
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                session.status = "failed"
+                session.save()
+                broadcast_status(session_id, "failed",
+                                 {"message": "Port scan failed"})
+                audit_log(
+                    "scan_completed",
+                    {
+                        "scan_type": "port_scan",
+                        "target_ip": ip,
+                        "port_list": list(ports)[:200],
+                        "port_count": len(ports),
+                        "result_count": 0,
+                    },
+                    "failure",
+                    duration_ms,
+                    initiated_by=initiated_by,
+                    error_message=str(exc),
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
 
         thread_id = start_thread(
             target=_run,
             name=f"portscan-{ip}",
             meta={"kind": "scan", "scan_type": "port_scan", "session_id": session_id, "target": ip},
+        )
+        thread_id_ref["id"] = thread_id
+
+        audit_log(
+            "scan_started",
+            {
+                "scan_type": "port_scan",
+                "target_ip": ip,
+                "port_list": list(ports)[:200],
+                "port_count": len(ports),
+            },
+            "success",
+            0,
+            initiated_by=initiated_by,
+            metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
         _emit_alert(session, {
@@ -487,52 +689,98 @@ class OSFingerprintView(APIView):
             return Response({"error": "ip unreachable"}, status=404)
 
         session, session_id = _new_session()
+        initiated_by = _initiated_by(request)
 
         def _run(stop_flag):
+            start_time = time.perf_counter()
             def on_pkt(pkt_dict):
                 _log_packet(session, pkt_dict)
 
-            result = fingerprint_os(ip, stop_flag=stop_flag, on_packet=on_pkt)
+            try:
+                result = fingerprint_os(ip, stop_flag=stop_flag, on_packet=on_pkt)
 
-            # Persist result
-            host_doc = Host.objects(session=session, ip=ip).first()
-            if not host_doc:
-                host_doc = Host(session=session, ip=ip)
-            host_doc.os_guess   = result["os_guess"]
-            host_doc.confidence = result["confidence"]
-            host_doc.save()
+                # Persist result
+                host_doc = Host.objects(session=session, ip=ip).first()
+                if not host_doc:
+                    host_doc = Host(session=session, ip=ip)
+                host_doc.os_guess   = result["os_guess"]
+                host_doc.confidence = result["confidence"]
+                host_doc.save()
 
-            packet = {
-                "event_type":   "os_result",
-                "ip":           ip,
-                "os_guess":     result["os_guess"],
-                "confidence":   result["confidence"],
-                "ttl":          result["ttl"],
-                "window_size":  result["window_size"],
-                "xmas_result":  result["xmas_result"],
-                "details":      result["details"],
-                "timestamp":    datetime.utcnow().isoformat()
-            }
-            broadcast_packet(session_id, packet)
-            broadcast_packet("live", packet)
+                packet = {
+                    "event_type":   "os_result",
+                    "ip":           ip,
+                    "os_guess":     result["os_guess"],
+                    "confidence":   result["confidence"],
+                    "ttl":          result["ttl"],
+                    "window_size":  result["window_size"],
+                    "xmas_result":  result["xmas_result"],
+                    "details":      result["details"],
+                    "timestamp":    datetime.utcnow().isoformat()
+                }
+                broadcast_packet(session_id, packet)
+                broadcast_packet("live", packet)
 
-            session.status = "complete"
-            session.save()
-            broadcast_status(session_id, "complete",
-                             {"message": "OS fingerprint complete"})
-            _emit_alert(session, {
-                "type": "os_fingerprint_complete",
-                "src_ip": "scanner",
-                "dst_ip": ip,
-                "severity": "low",
-                "message": f"OS fingerprint completed for {ip}",
-                "timestamp": datetime.utcnow().isoformat(),
-            })
+                session.status = "complete"
+                session.save()
+                broadcast_status(session_id, "complete",
+                                 {"message": "OS fingerprint complete"})
+                _emit_alert(session, {
+                    "type": "os_fingerprint_complete",
+                    "src_ip": "scanner",
+                    "dst_ip": ip,
+                    "severity": "low",
+                    "message": f"OS fingerprint completed for {ip}",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                audit_log(
+                    "fingerprint_run",
+                    {
+                        "scan_type": "os_fingerprint",
+                        "target_ip": ip,
+                        "result_count": 1,
+                    },
+                    "success",
+                    duration_ms,
+                    initiated_by=initiated_by,
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
+            except Exception as exc:
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                session.status = "failed"
+                session.save()
+                broadcast_status(session_id, "failed",
+                                 {"message": "OS fingerprint failed"})
+                audit_log(
+                    "fingerprint_run",
+                    {
+                        "scan_type": "os_fingerprint",
+                        "target_ip": ip,
+                        "result_count": 0,
+                    },
+                    "failure",
+                    duration_ms,
+                    initiated_by=initiated_by,
+                    error_message=str(exc),
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
 
         thread_id = start_thread(
             target=_run,
             name=f"osfp-{ip}",
             meta={"kind": "scan", "scan_type": "os_fingerprint", "session_id": session_id, "target": ip},
+        )
+        thread_id_ref["id"] = thread_id
+
+        audit_log(
+            "scan_started",
+            {"scan_type": "os_fingerprint", "target_ip": ip},
+            "success",
+            0,
+            initiated_by=initiated_by,
+            metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
         _emit_alert(session, {
@@ -566,6 +814,7 @@ class ARPSpoofView(APIView):
             return Response({"error": "target_ip and gateway_ip required"}, status=400)
 
         session, session_id = _new_session()
+        initiated_by = _initiated_by(request)
 
         attack_log = AttackLog(
             session     = session,
@@ -577,23 +826,49 @@ class ARPSpoofView(APIView):
         attack_log.save()
 
         def _run(stop_flag):
-            def on_pkt(pkt_dict):
-                attack_log.packets_sent += 1
+            try:
+                def on_pkt(pkt_dict):
+                    attack_log.packets_sent += 1
+                    attack_log.save()
+                    _log_packet(session, pkt_dict)
+
+                arp_spoof(target_ip, gateway_ip, stop_flag, on_packet=on_pkt)
+
+                attack_log.status     = "stopped"
+                attack_log.stopped_at = datetime.utcnow()
                 attack_log.save()
-                _log_packet(session, pkt_dict)
-
-            arp_spoof(target_ip, gateway_ip, stop_flag, on_packet=on_pkt)
-
-            attack_log.status     = "stopped"
-            attack_log.stopped_at = datetime.utcnow()
-            attack_log.save()
-            broadcast_status(session_id, "stopped",
-                             {"message": "ARP spoof stopped"})
+                broadcast_status(session_id, "stopped",
+                                 {"message": "ARP spoof stopped"})
+            except Exception as exc:
+                attack_log.status = "stopped"
+                attack_log.stopped_at = datetime.utcnow()
+                attack_log.save()
+                broadcast_status(session_id, "failed",
+                                 {"message": "ARP spoof failed"})
+                audit_log(
+                    "attack_initiated",
+                    {"attack_type": "arp_spoof", "target_ip": target_ip, "gateway_ip": gateway_ip},
+                    "failure",
+                    0,
+                    initiated_by=initiated_by,
+                    error_message=str(exc),
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
 
         thread_id = start_thread(
             target=_run,
             name=f"arp-spoof-{target_ip}",
             meta={"kind": "attack", "attack_type": "arp_spoof", "session_id": session_id, "target": target_ip},
+        )
+        thread_id_ref["id"] = thread_id
+
+        audit_log(
+            "attack_initiated",
+            {"attack_type": "arp_spoof", "target_ip": target_ip, "gateway_ip": gateway_ip},
+            "success",
+            0,
+            initiated_by=initiated_by,
+            metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
         _emit_alert(session, {
@@ -628,6 +903,8 @@ class SYNFloodView(APIView):
             return Response({"error": "target_ip required"}, status=400)
 
         session, session_id = _new_session()
+        initiated_by = _initiated_by(request)
+        thread_id_ref = {"id": None}
 
         attack_log = AttackLog(
             session     = session,
@@ -638,24 +915,50 @@ class SYNFloodView(APIView):
         attack_log.save()
 
         def _run(stop_flag):
-            def on_pkt(pkt_dict):
-                attack_log.packets_sent += 1
+            try:
+                def on_pkt(pkt_dict):
+                    attack_log.packets_sent += 1
+                    attack_log.save()
+                    _log_packet(session, pkt_dict)
+                    detection.check_syn_flood(session, target_ip, target_port, on_alert=lambda a: _emit_alert(session, a))
+
+                syn_flood(target_ip, target_port, stop_flag, on_packet=on_pkt)
+
+                attack_log.status     = "stopped"
+                attack_log.stopped_at = datetime.utcnow()
                 attack_log.save()
-                _log_packet(session, pkt_dict)
-                detection.check_syn_flood(session, target_ip, target_port, on_alert=lambda a: _emit_alert(session, a))
-
-            syn_flood(target_ip, target_port, stop_flag, on_packet=on_pkt)
-
-            attack_log.status     = "stopped"
-            attack_log.stopped_at = datetime.utcnow()
-            attack_log.save()
-            broadcast_status(session_id, "stopped",
-                             {"message": "SYN flood stopped"})
+                broadcast_status(session_id, "stopped",
+                                 {"message": "SYN flood stopped"})
+            except Exception as exc:
+                attack_log.status = "stopped"
+                attack_log.stopped_at = datetime.utcnow()
+                attack_log.save()
+                broadcast_status(session_id, "failed",
+                                 {"message": "SYN flood failed"})
+                audit_log(
+                    "attack_initiated",
+                    {"attack_type": "syn_flood", "target_ip": target_ip, "target_port": target_port},
+                    "failure",
+                    0,
+                    initiated_by=initiated_by,
+                    error_message=str(exc),
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
 
         thread_id = start_thread(
             target=_run,
             name=f"syn-flood-{target_ip}",
             meta={"kind": "attack", "attack_type": "syn_flood", "session_id": session_id, "target": target_ip},
+        )
+        thread_id_ref["id"] = thread_id
+
+        audit_log(
+            "attack_initiated",
+            {"attack_type": "syn_flood", "target_ip": target_ip, "target_port": target_port},
+            "success",
+            0,
+            initiated_by=initiated_by,
+            metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
         _emit_alert(session, {
@@ -689,6 +992,8 @@ class ICMPRedirectView(APIView):
             return Response({"error": "target_ip, spoofed_gateway and attacker_ip required"}, status=400)
 
         session, session_id = _new_session()
+        initiated_by = _initiated_by(request)
+        thread_id_ref = {"id": None}
 
         attack_log = AttackLog(
             session=session,
@@ -704,29 +1009,66 @@ class ICMPRedirectView(APIView):
         attack_log.save()
 
         def _run(stop_flag):
-            def on_pkt(pkt_dict):
-                attack_log.packets_sent += 1
+            try:
+                def on_pkt(pkt_dict):
+                    attack_log.packets_sent += 1
+                    attack_log.save()
+                    _log_packet(session, pkt_dict)
+
+                icmp_redirect(
+                    target_ip=target_ip,
+                    spoofed_gateway=spoofed_gateway,
+                    attacker_ip=attacker_ip,
+                    destination_ip=destination_ip,
+                    stop_flag=stop_flag,
+                    on_packet=on_pkt,
+                )
+
+                attack_log.status = "stopped"
+                attack_log.stopped_at = datetime.utcnow()
                 attack_log.save()
-                _log_packet(session, pkt_dict)
-
-            icmp_redirect(
-                target_ip=target_ip,
-                spoofed_gateway=spoofed_gateway,
-                attacker_ip=attacker_ip,
-                destination_ip=destination_ip,
-                stop_flag=stop_flag,
-                on_packet=on_pkt,
-            )
-
-            attack_log.status = "stopped"
-            attack_log.stopped_at = datetime.utcnow()
-            attack_log.save()
-            broadcast_status(session_id, "stopped", {"message": "ICMP redirect stopped"})
+                broadcast_status(session_id, "stopped", {"message": "ICMP redirect stopped"})
+            except Exception as exc:
+                attack_log.status = "stopped"
+                attack_log.stopped_at = datetime.utcnow()
+                attack_log.save()
+                broadcast_status(session_id, "failed", {"message": "ICMP redirect failed"})
+                audit_log(
+                    "attack_initiated",
+                    {
+                        "attack_type": "icmp_redirect",
+                        "target_ip": target_ip,
+                        "spoofed_gateway": spoofed_gateway,
+                        "attacker_ip": attacker_ip,
+                        "destination_ip": destination_ip,
+                    },
+                    "failure",
+                    0,
+                    initiated_by=initiated_by,
+                    error_message=str(exc),
+                    metadata={"session_id": session_id, "thread_id": thread_id_ref["id"]},
+                )
 
         thread_id = start_thread(
             target=_run,
             name=f"icmp-redirect-{target_ip}",
             meta={"kind": "attack", "attack_type": "icmp_redirect", "session_id": session_id, "target": target_ip},
+        )
+        thread_id_ref["id"] = thread_id
+
+        audit_log(
+            "attack_initiated",
+            {
+                "attack_type": "icmp_redirect",
+                "target_ip": target_ip,
+                "spoofed_gateway": spoofed_gateway,
+                "attacker_ip": attacker_ip,
+                "destination_ip": destination_ip,
+            },
+            "success",
+            0,
+            initiated_by=initiated_by,
+            metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
         _emit_alert(session, {
@@ -1125,6 +1467,30 @@ class SessionResultsView(APIView):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 7c. Host risk score
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HostRiskScoreView(APIView):
+    """GET /api/hosts/<ip>/risk-score/"""
+
+    def get(self, request, ip):
+        if not ip:
+            return Response({"error": "ip required"}, status=400)
+
+        payload = detection.calculate_host_risk(ip, include_breakdown=True)
+        return Response({
+            "ip": ip,
+            "risk_score": payload.get("risk_score", 0),
+            "risk_level": payload.get("risk_level", "low"),
+            "breakdown": payload.get("breakdown", {
+                "risky_ports": [],
+                "vulns": [],
+                "failed_logins": 0,
+            }),
+        })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 7b. Session history endpoints (alerts + packets)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1300,6 +1666,18 @@ class InboundAlertView(APIView):
             "message":    alert.message,
             "timestamp":  alert.timestamp.isoformat(),
         })
+
+        try:
+            payload = {
+                "type": alert.type,
+                "message": alert.message,
+            }
+            if detection.is_auth_alert_payload(payload):
+                target_ip = alert.dst_ip or alert.src_ip
+                if target_ip:
+                    detection.calculate_host_risk(target_ip)
+        except Exception:
+            pass
 
         return Response({
             "status":     "ok",

@@ -102,14 +102,19 @@ export function useWebSocket(sessionId) {
   const [portResults, setPortResults] = useState([]);
   const [osResults, setOsResults]     = useState([]);
   const [status, setStatus]           = useState("disconnected");
+  const [sessionStatus, setSessionStatus] = useState(null);
   const [pps, setPps]                 = useState(0);   // packets per second counter
   const [synPps, setSynPps]           = useState(0);
+  const [reconnectTick, setReconnectTick] = useState(0);
 
   const wsRef        = useRef(null);
   const pktCountRef  = useRef(0);
   const synCountRef  = useRef(0);
   const ppsTimerRef  = useRef(null);
   const alertSeenRef = useRef(new Set());
+  const retryTimerRef = useRef(null);
+  const retryAttemptRef = useRef(0);
+  const closingRef = useRef(false);
 
   // Calculate packets-per-second every second
   useEffect(() => {
@@ -133,14 +138,19 @@ export function useWebSocket(sessionId) {
     setOsResults([]);
     setPps(0);
     setSynPps(0);
+    setSessionStatus(null);
     pktCountRef.current = 0;
     synCountRef.current = 0;
     alertSeenRef.current = new Set();
     const url = `${WS_BASE}/ws/scan/${sessionId}/`;
     const ws  = new WebSocket(url);
     wsRef.current = ws;
+    closingRef.current = false;
 
-    ws.onopen = () => setStatus("connected");
+    ws.onopen = () => {
+      retryAttemptRef.current = 0;
+      setStatus("connected");
+    };
 
     ws.onmessage = (e) => {
       let data;
@@ -183,7 +193,7 @@ export function useWebSocket(sessionId) {
           setOsResults((prev) => upsertOsResultByIp(prev, data));
           break;
         case "status":
-          setStatus(data.status);
+          setSessionStatus(data.status || null);
           break;
         default:
           // Ignore non-packet control/heartbeat events.
@@ -191,11 +201,38 @@ export function useWebSocket(sessionId) {
       }
     };
 
-    ws.onclose  = () => setStatus("disconnected");
-    ws.onerror  = () => setStatus("error");
+    const scheduleReconnect = () => {
+      if (closingRef.current) return;
+      if (retryTimerRef.current) return;
+      const attempt = retryAttemptRef.current + 1;
+      retryAttemptRef.current = attempt;
+      const delay = Math.min(10000, 800 * attempt);
+      retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null;
+        setReconnectTick((tick) => tick + 1);
+      }, delay);
+    };
 
-    return () => ws.close();
-  }, [sessionId]);
+    ws.onclose  = () => {
+      setStatus("disconnected");
+      scheduleReconnect();
+    };
+    ws.onerror  = () => {
+      setStatus("error");
+      scheduleReconnect();
+    };
+
+    return () => {
+      closingRef.current = true;
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [sessionId, reconnectTick]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -238,7 +275,7 @@ export function useWebSocket(sessionId) {
 
   return {
     packets, alerts, hosts, portResults, osResults,
-    status, pps, synPps, send,
+    status, sessionStatus, pps, synPps, send,
     // Convenience: combined raw event stream
     allEvents: packets,
   };

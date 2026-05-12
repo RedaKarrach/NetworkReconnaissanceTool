@@ -87,16 +87,57 @@ def broadcast_packet(session_id: str, packet_data: dict):
 def broadcast_alert(session_id: str, alert_data: dict):
     """Send an alert event to all WebSocket clients watching this session."""
     channel_layer = get_channel_layer()
-    async_to_sync(channel_layer.group_send)(
-        f"scan_{session_id}",
-        {
-            "type": "alert.event",
-            "data": {
-                "event_type": "alert",
-                **alert_data
+
+    # Defensive sanitization: ensure payload is JSON-serializable and reasonably sized.
+    safe_data = {"event_type": "alert"}
+    try:
+        for k, v in (alert_data or {}).items():
+            # Convert datetimes to ISO strings
+            try:
+                from datetime import datetime as _dt
+                if isinstance(v, _dt):
+                    safe_data[k] = v.isoformat()
+                    continue
+            except Exception:
+                pass
+
+            # Convert dict/list to compact JSON string to avoid nested objects
+            if isinstance(v, (dict, list)):
+                try:
+                    safe_str = json.dumps(v)
+                except Exception:
+                    safe_str = str(v)
+                # Truncate overly long strings
+                safe_data[k] = safe_str if len(safe_str) <= 2000 else safe_str[:2000] + "..."
+                continue
+
+            # Fallback: coerce to string for unknown/complex types
+            if not isinstance(v, (str, int, float, bool)) and v is not None:
+                try:
+                    safe_data[k] = str(v)
+                except Exception:
+                    safe_data[k] = "<unserializable>"
+                continue
+
+            # Strings and numbers: truncate if excessively long
+            if isinstance(v, str) and len(v) > 2000:
+                safe_data[k] = v[:2000] + "..."
+            else:
+                safe_data[k] = v
+
+        async_to_sync(channel_layer.group_send)(
+            f"scan_{session_id}",
+            {
+                "type": "alert.event",
+                "data": safe_data,
             }
-        }
-    )
+        )
+    except Exception as exc:
+        # Best-effort logging to stderr; do not raise to avoid crashing caller threads
+        try:
+            print(f"[websockets.broadcast_alert] failed to send alert for session {session_id}: {exc}")
+        except Exception:
+            pass
 
 
 def broadcast_status(session_id: str, status: str, extra: dict = None):

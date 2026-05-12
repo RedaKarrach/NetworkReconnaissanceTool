@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "name": "Port Scanning",
+      "pattern_type": "regex",
+      "patterns": [
+        "port sweep",
+        "port scan",
+        "port_sweep",
+        "nmap",
+        "network service discovery"
+      ],
+      "tactic": "Discovery",
+      "tactic_id": "TA0007",
+      "technique": "Network Service Discovery",
+      "technique_id": "T1046"
+    },
+    {
+      "name": "SMBv1 Detected",
+      "pattern_type": "regex",
+      "patterns": [
+        "smbv1",
+        "smb v1",
+        "smb1",
+        "smbv1 detected"
+      ],
+      "tactic": "Impact",
+      "tactic_id": "TA0040",
+      "technique": "Disk Structure Wipe",
+      "technique_id": "T1561"
+    },
+    {
+      "name": "Failed Login Attempts",
+      "pattern_type": "regex",
+      "patterns": [
+        "failed login",
+        "login failed",
+        "authentication failure",
+        "invalid password",
+        "brute force"
+      ],
+      "tactic": "Credential Access",
+      "tactic_id": "TA0006",
+      "technique": "Brute Force",
+      "technique_id": "T1110"
+    },
+    {
+      "name": "Reconnaissance",
+      "pattern_type": "regex",
+      "patterns": [
+        "reconnaissance",
+        "active scan",
+        "banner grab",
+        "dns enum",
+        "whois"
+      ],
+      "tactic": "Reconnaissance",
+      "tactic_id": "TA0043",
+      "technique": "Active Scanning",
+      "technique_id": "T1595"
+    },
+    {
+      "name": "Persistence via Service",
+      "pattern_type": "regex",
+      "patterns": [
+        "service installed",
+        "new service",
+        "auto-start service",
+        "systemd service",
+        "windows service"
+      ],
+      "tactic": "Persistence",
+      "tactic_id": "TA0003",
+      "technique": "Create or Modify System Process",
+      "technique_id": "T1543"
+    },
+    {
+      "name": "Privilege Escalation",
+      "pattern_type": "regex",
+      "patterns": [
+        "privilege escalation",
+        "elevated privileges",
+        "uac bypass",
+        "sudo"
+      ],
+      "tactic": "Privilege Escalation",
+      "tactic_id": "TA0004",
+      "technique": "Abuse Elevation Control Mechanism",
+      "technique_id": "T1548"
+    },
+    {
+      "name": "Defense Evasion",
+      "pattern_type": "regex",
+      "patterns": [
+        "disabled antivirus",
+        "defender disabled",
+        "security tool disabled",
+        "tamper protection",
+        "log cleared"
+      ],
+      "tactic": "Defense Evasion",
+      "tactic_id": "TA0005",
+      "technique": "Impair Defenses",
+      "technique_id": "T1562"
+    },
+    {
+      "name": "Lateral Movement",
+      "pattern_type": "regex",
+      "patterns": [
+        "lateral movement",
+        "remote service",
+        "psexec",
+        "wmic",
+        "rdp",
+        "ssh lateral"
+      ],
+      "tactic": "Lateral Movement",
+      "tactic_id": "TA0008",
+      "technique": "Remote Services",
+      "technique_id": "T1021"
+    },
+    {
+      "name": "Impact - Ransomware",
+      "pattern_type": "regex",
+      "patterns": [
+        "ransomware",
+        "files encrypted",
+        "encryption activity",
+        "ransom note"
+      ],
+      "tactic": "Impact",
+      "tactic_id": "TA0040",
+      "technique": "Data Encrypted for Impact",
+      "technique_id": "T1486"
+    }
+  ]
+}

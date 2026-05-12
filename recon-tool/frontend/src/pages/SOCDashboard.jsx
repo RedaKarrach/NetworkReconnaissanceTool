@@ -9,6 +9,8 @@ import { useInventory } from "../hooks/useInventory";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import { useAgentHealth } from "../hooks/useAgentHealth";
 import PacketInspector from "../components/PacketInspector";
+import ActivityLog from "../components/ActivityLog";
+import { API_BASE } from "../lib/runtimeConfig";
 
 const LIVE_SESSION = "live";
 const MAX_ALERTS = 30;
@@ -90,6 +92,22 @@ const RULE_REFERENCE = [
   },
 ];
 
+const SOC_TABS = [
+  { id: "live", label: "Live Operations" },
+  { id: "activity", label: "Activity Log" },
+];
+
+const MITRE_TACTIC_STYLES = {
+  Impact: "border-red-500/40 bg-red-500/15 text-red-200",
+  "Lateral Movement": "border-orange-500/40 bg-orange-500/15 text-orange-200",
+  Discovery: "border-yellow-500/40 bg-yellow-500/15 text-yellow-200",
+  "Credential Access": "border-amber-500/40 bg-amber-500/15 text-amber-200",
+  "Defense Evasion": "border-sky-500/40 bg-sky-500/15 text-sky-200",
+  Persistence: "border-emerald-500/40 bg-emerald-500/15 text-emerald-200",
+  "Privilege Escalation": "border-fuchsia-500/40 bg-fuchsia-500/15 text-fuchsia-200",
+  Reconnaissance: "border-lime-500/40 bg-lime-500/15 text-lime-200",
+};
+
 function normalizeSeverity(value) {
   if (typeof value !== "string") return "low";
   const sev = value.toLowerCase();
@@ -108,6 +126,10 @@ function normalizeAlert(input) {
     severity: normalizeSeverity(input?.severity),
     message: input?.message || "Suspicious activity detected",
     timestamp: input?.timestamp || new Date().toISOString(),
+    mitre_tactic: input?.mitre_tactic || "",
+    mitre_tactic_id: input?.mitre_tactic_id || "",
+    mitre_technique: input?.mitre_technique || "",
+    mitre_technique_id: input?.mitre_technique_id || "",
   };
 }
 
@@ -157,6 +179,50 @@ function osEmoji(name) {
   return "❓";
 }
 
+function resolveMitreForAlert(alert, mappings) {
+  if (alert.mitre_technique_id || alert.mitre_tactic_id) return alert;
+  if (!Array.isArray(mappings) || mappings.length === 0) return alert;
+  const text = `${alert.type} ${alert.message}`.toLowerCase();
+
+  for (const mapping of mappings) {
+    const patternType = String(mapping?.pattern_type || "regex").toLowerCase();
+    const patterns = Array.isArray(mapping?.patterns) ? mapping.patterns : [];
+    if (!patterns.length) continue;
+
+    if (patternType === "keyword") {
+      if (patterns.some((pattern) => text.includes(String(pattern).toLowerCase()))) {
+        return {
+          ...alert,
+          mitre_tactic: mapping?.tactic || "",
+          mitre_tactic_id: mapping?.tactic_id || "",
+          mitre_technique: mapping?.technique || "",
+          mitre_technique_id: mapping?.technique_id || "",
+        };
+      }
+      continue;
+    }
+
+    for (const pattern of patterns) {
+      try {
+        const regex = new RegExp(pattern, "i");
+        if (regex.test(text)) {
+          return {
+            ...alert,
+            mitre_tactic: mapping?.tactic || "",
+            mitre_tactic_id: mapping?.tactic_id || "",
+            mitre_technique: mapping?.technique || "",
+            mitre_technique_id: mapping?.technique_id || "",
+          };
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return alert;
+}
+
 function KpiCard({ title, value, subLabel, valueClass, subLabelClass, flash }) {
   return (
     <div className="card-premium relative overflow-hidden p-5">
@@ -177,6 +243,10 @@ function KpiCard({ title, value, subLabel, valueClass, subLabelClass, flash }) {
 
 function AlertRow({ alert, isNewest }) {
   const style = SEVERITY_STYLE[alert.severity] || SEVERITY_STYLE.low;
+  const mitreStyle = MITRE_TACTIC_STYLES[alert.mitre_tactic] || "border-border-default/60 bg-bg-elevated/60 text-text-tertiary";
+  const mitreUrl = alert.mitre_technique_id
+    ? `https://attack.mitre.org/techniques/${alert.mitre_technique_id}/`
+    : "";
   return (
     <div
       className={`alert-row-3d group flex items-stretch gap-3 border-b border-border-default/60 px-4 py-3 transition-colors duration-150 hover:bg-bg-card-hover/60 ${isNewest ? "animate-slide-in-top" : ""}`}
@@ -195,6 +265,20 @@ function AlertRow({ alert, isNewest }) {
           {alert.severity.toUpperCase()}
         </span>
         <span className="font-mono text-xs text-text-tertiary">{formatTime(alert.timestamp)}</span>
+        {alert.mitre_technique_id ? (
+          <a
+            className={`mt-1 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${mitreStyle}`}
+            href={mitreUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={`${alert.mitre_tactic} · ${alert.mitre_technique}`}
+          >
+            <span>{alert.mitre_tactic || "MITRE"}</span>
+            <span className="font-mono text-[10px]">{alert.mitre_technique_id}</span>
+          </a>
+        ) : (
+          <span className="mt-1 text-[10px] uppercase text-text-tertiary">MITRE: unmapped</span>
+        )}
       </div>
     </div>
   );
@@ -216,9 +300,11 @@ export default function SOCDashboard() {
   const { items: healthItems, error: healthError } = useAgentHealth();
   const isWsConnected = ws.status === "connected";
 
+  const [mitreMapping, setMitreMapping] = useState([]);
   const [synPps, setSynPps] = useState(0);
   const [synHistory, setSynHistory] = useState(Array(BAR_COUNT).fill(0));
   const [flash, setFlash] = useState({ syn: false, arp: false, alerts: false, agents: false });
+  const [activeTab, setActiveTab] = useState("live");
 
   const newestAlertKeyRef = useRef("");
   const [newestAlertKey, setNewestAlertKey] = useState("");
@@ -230,7 +316,9 @@ export default function SOCDashboard() {
     return (ws?.alerts || []).map((entry) => normalizeAlert(entry)).slice(0, MAX_ALERTS);
   }, [ws?.alerts]);
 
-  const alerts = liveAlerts;
+  const alerts = useMemo(() => {
+    return liveAlerts.map((alert) => resolveMitreForAlert(alert, mitreMapping));
+  }, [liveAlerts, mitreMapping]);
 
   // Live agents (merged from registry + inventory)
   const liveAgents = useMemo(() => {
@@ -292,6 +380,22 @@ export default function SOCDashboard() {
         return tb - ta;
       });
   }, [healthItems, inventoryItems, registryItems]);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE}/api/mitre-mapping/`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !data) return;
+        setMitreMapping(Array.isArray(data.mappings) ? data.mappings : []);
+      })
+      .catch(() => {
+        if (active) setMitreMapping([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const onlineAgents = useMemo(() => liveAgents.filter((agent) => agent.online), [liveAgents]);
   const onlineAgentCount = onlineAgents.length;
@@ -422,205 +526,237 @@ export default function SOCDashboard() {
 
   return (
     <div className="scene-3d flex h-full min-h-0 flex-col gap-4 overflow-hidden text-text-primary">
-      <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <KpiCard
-          title="SYN packets / sec"
-          value={synPps}
-          subLabel={synAlertsLast60 > 0 ? `${synAlertsLast60} SYN alerts in last 60s` : "No SYN flood detected"}
-          valueClass="text-threat-critical"
-          subLabelClass={synAlertsLast60 > 0 ? "text-threat-critical-text" : "text-text-tertiary"}
-          flash={flash.syn}
-        />
-        <KpiCard
-          title="ARP anomalies"
-          value={arpAnomalies}
-          subLabel={`MAC changed × ${arpAnomalies}`}
-          valueClass="text-threat-high"
-          subLabelClass="text-threat-high-text"
-          flash={flash.arp}
-        />
-        <KpiCard
-          title="Alerts fired"
-          value={alertsFiredLast60}
-          subLabel="Last 60 seconds"
-          valueClass="text-threat-critical"
-          subLabelClass="text-text-tertiary"
-          flash={flash.alerts}
-        />
-        <KpiCard
-          title="Agents online"
-          value={onlineAgentCount}
-          subLabel={onlineAgentLabel}
-          valueClass="text-status-success"
-          subLabelClass="text-text-tertiary"
-          flash={flash.agents}
-        />
-      </section>
-
-      <section className="flex min-h-0 flex-1 gap-3">
-        <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1.6 }}>
-          <div className="panel-premium alert-panel-shell flex min-h-0 flex-1 flex-col tilt-3d-soft">
-            <div className="flex items-center border-b border-border-default/60 px-4 py-3">
-              <p className="text-sm font-medium tracking-widest text-text-tertiary">ALERT FEED</p>
-              <div className="ml-auto flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-status-danger animate-pulse-critical" />
-                <span className="font-mono text-sm text-status-danger">live</span>
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {alerts.length === 0 ? (
-                <div className="px-4 py-4 text-sm text-text-tertiary">Waiting for alerts...</div>
-              ) : (
-                alerts.slice(0, MAX_ALERTS).map((alert) => {
-                  const key = `${alert.timestamp}-${alert.src_ip}-${alert.type}`;
-                  return <AlertRow key={key} alert={alert} isNewest={key === newestAlertKey} />;
-                })
+      <div className="flex gap-2 border-b border-border-premium/40 overflow-x-auto">
+        {SOC_TABS.map((tab, idx) => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className="relative px-5 py-3.5 text-sm font-semibold transition-all duration-300 whitespace-nowrap stagger-item"
+              style={{ animationDelay: `${idx * 30}ms` }}
+            >
+              {isActive && (
+                <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-accent-primary to-accent-hover rounded-full" />
               )}
-            </div>
-          </div>
+              <span className={isActive ? "text-accent-primary" : "text-text-tertiary hover:text-text-secondary"}>
+                {tab.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
-          <div className="panel-premium flex min-h-0 flex-col tilt-3d-soft" style={{ height: 320 }}>
-            <PacketInspector
-              packets={ws?.packets || []}
-              pps={ws?.pps || 0}
-              wsStatus={ws?.status || "disconnected"}
+      {activeTab === "activity" ? (
+        <div className="flex min-h-0 flex-1">
+          <div className="h-full w-full">
+            <ActivityLog />
+          </div>
+        </div>
+      ) : (
+        <>
+          <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <KpiCard
+              title="SYN packets / sec"
+              value={synPps}
+              subLabel={synAlertsLast60 > 0 ? `${synAlertsLast60} SYN alerts in last 60s` : "No SYN flood detected"}
+              valueClass="text-threat-critical"
+              subLabelClass={synAlertsLast60 > 0 ? "text-threat-critical-text" : "text-text-tertiary"}
+              flash={flash.syn}
             />
-          </div>
-        </div>
+            <KpiCard
+              title="ARP anomalies"
+              value={arpAnomalies}
+              subLabel={`MAC changed × ${arpAnomalies}`}
+              valueClass="text-threat-high"
+              subLabelClass="text-threat-high-text"
+              flash={flash.arp}
+            />
+            <KpiCard
+              title="Alerts fired"
+              value={alertsFiredLast60}
+              subLabel="Last 60 seconds"
+              valueClass="text-threat-critical"
+              subLabelClass="text-text-tertiary"
+              flash={flash.alerts}
+            />
+            <KpiCard
+              title="Agents online"
+              value={onlineAgentCount}
+              subLabel={onlineAgentLabel}
+              valueClass="text-status-success"
+              subLabelClass="text-text-tertiary"
+              flash={flash.agents}
+            />
+          </section>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1 }}>
-          <div className="card-premium p-4 tilt-3d-soft">
-            <p className="text-sm font-medium tracking-widest text-text-tertiary">LIVE ENDPOINT STATUS</p>
-            {healthError && (
-              <div className="mt-2 rounded-md border border-border-default bg-bg-elevated/70 px-3 py-2 text-xs text-text-tertiary">
-                Health feed unavailable: {healthError}
+          <section className="flex min-h-0 flex-1 gap-3">
+            <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1.6 }}>
+              <div className="panel-premium alert-panel-shell flex min-h-0 flex-1 flex-col tilt-3d-soft">
+                <div className="flex items-center border-b border-border-default/60 px-4 py-3">
+                  <p className="text-sm font-medium tracking-widest text-text-tertiary">ALERT FEED</p>
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-status-danger animate-pulse-critical" />
+                    <span className="font-mono text-sm text-status-danger">live</span>
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {alerts.length === 0 ? (
+                    <div className="px-4 py-4 text-sm text-text-tertiary">Waiting for alerts...</div>
+                  ) : (
+                    alerts.slice(0, MAX_ALERTS).map((alert) => {
+                      const key = `${alert.timestamp}-${alert.src_ip}-${alert.type}`;
+                      return <AlertRow key={key} alert={alert} isNewest={key === newestAlertKey} />;
+                    })
+                  )}
+                </div>
               </div>
-            )}
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <AgentStat label="Online" value={onlineAgentCount} valueClass="font-mono text-status-success" />
-              <AgentStat label="Tracked" value={liveAgents.length} valueClass="font-mono text-accent-primary" />
-              <AgentStat label="Alerts / 60s" value={alertsFiredLast60} valueClass="font-mono text-threat-high" />
-              <AgentStat label="Packets / 60s" value={packetsObservedLast60.toLocaleString()} valueClass="font-mono text-text-primary" />
+
+              <div className="panel-premium flex min-h-0 flex-col tilt-3d-soft" style={{ height: 320 }}>
+                <PacketInspector
+                  packets={ws?.packets || []}
+                  pps={ws?.pps || 0}
+                  wsStatus={ws?.status || "disconnected"}
+                />
+              </div>
             </div>
 
-            <div className="mt-3 space-y-2">
-              {liveAgents.length === 0 ? (
-                <div className="rounded-md bg-bg-elevated px-3 py-2 text-sm text-text-tertiary">No registered or inventory agents yet.</div>
-              ) : (
-                liveAgents.slice(0, 5).map((agent) => (
-                  <div key={agent.agentId} className="agent-chip flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${agent.healthStatus === "online" ? "bg-status-success" : agent.healthStatus === "offline" ? "bg-status-danger" : agent.online ? "bg-status-success" : "bg-status-offline"}`} />
-                    <span className="text-sm">{osEmoji(agent.os)}</span>
-                    <span className="flex-1 truncate text-sm text-text-primary">
-                      {agent.hostname && agent.hostname !== "—" ? agent.hostname : agent.agentId}
-                    </span>
-                    <span className="font-mono text-xs text-text-tertiary">{agent.ip}</span>
-                    <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${agent.healthStatus === "online" ? "bg-status-success/15 text-status-success" : agent.healthStatus === "offline" ? "bg-status-danger/15 text-status-danger" : "bg-bg-elevated text-text-tertiary"}`}>
-                      {agent.healthStatus || "unknown"}
-                    </span>
+            <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1 }}>
+              <div className="card-premium p-4 tilt-3d-soft">
+                <p className="text-sm font-medium tracking-widest text-text-tertiary">LIVE ENDPOINT STATUS</p>
+                {healthError && (
+                  <div className="mt-2 rounded-md border border-border-default bg-bg-elevated/70 px-3 py-2 text-xs text-text-tertiary">
+                    Health feed unavailable: {healthError}
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="card-premium p-4 tilt-3d-soft">
-            <p className="text-sm font-medium tracking-widest text-text-tertiary">HOT TARGETS</p>
-            <div className="mt-3 space-y-2">
-              {hotTargets.length === 0 ? (
-                <div className="rounded-md bg-bg-elevated px-3 py-2 text-sm text-text-tertiary">No alert targets yet.</div>
-              ) : (
-                hotTargets.map((target) => {
-                  const style = SEVERITY_STYLE[target.severity] || SEVERITY_STYLE.low;
-                  return (
-                    <div key={target.ip} className="agent-chip flex items-center gap-2">
-                      <span className={`h-2 w-2 rounded-full ${style.dot}`} />
-                      <span className="flex-1 font-mono text-sm text-text-primary">{target.ip}</span>
-                      <span className={`rounded-sm border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText}`}>
-                        {target.severity.toUpperCase()}
-                      </span>
-                      <span className="font-mono text-md font-semibold text-text-secondary">{target.count}</span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          <div className="card-premium p-4 tilt-3d-soft">
-            <p className="text-sm font-medium tracking-widest text-text-tertiary">SYN RATE (60S)</p>
-            <div className="mt-3 flex h-24 items-end gap-px">
-              {synHistory.map((value, index) => {
-                const isAttack = value >= 700;
-                const height = Math.max(2, Math.round((value / maxBar) * 100));
-                return (
-                  <div key={`${index}-${value}`} className="flex-1 depth-float" style={{ animationDelay: `${index * 90}ms` }}>
-                    <div
-                      className={`w-full rounded-sm transition-all duration-150 ${isAttack ? "bg-threat-critical/70" : "bg-bg-elevated"}`}
-                      style={{ height: `${height}%` }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-2 flex items-center justify-between font-mono text-xs text-text-tertiary">
-              <span>-60s</span>
-              <span>-45s</span>
-              <span>-30s</span>
-              <span>-15s</span>
-              <span>now</span>
-            </div>
-          </div>
-
-          <div className="card-premium p-4 tilt-3d-soft">
-            <p className="text-sm font-medium tracking-widest text-text-tertiary">DETECTION RULES FIRED</p>
-            <div className="mt-3 space-y-3">
-              {detectionRows.map((row) => (
-                <div key={row.id} className="agent-chip flex items-center gap-2">
-                  <span className="rounded-sm bg-bg-elevated px-2 py-0.5 font-mono text-xs text-accent-primary">{row.id}</span>
-                  <p className="flex-1 text-sm text-text-secondary">{row.name}</p>
-                  <div className="flex items-end gap-px">
-                    {row.sparkline.map((v, idx) => (
-                      <span
-                        key={`${row.id}-${idx}`}
-                        className={row.sevStyle.bar}
-                        style={{ width: "3px", height: `${v}px` }}
-                      />
-                    ))}
-                  </div>
-                  <span className={`font-mono text-md font-bold ${row.sevStyle.valueText}`}>{row.count}</span>
+                )}
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <AgentStat label="Online" value={onlineAgentCount} valueClass="font-mono text-status-success" />
+                  <AgentStat label="Tracked" value={liveAgents.length} valueClass="font-mono text-accent-primary" />
+                  <AgentStat label="Alerts / 60s" value={alertsFiredLast60} valueClass="font-mono text-threat-high" />
+                  <AgentStat label="Packets / 60s" value={packetsObservedLast60.toLocaleString()} valueClass="font-mono text-text-primary" />
                 </div>
-              ))}
-            </div>
-          </div>
 
-          <div className="card-premium p-4 tilt-3d-soft">
-            <p className="text-sm font-medium tracking-widest text-text-tertiary">RULES REFERENCE</p>
-            <div className="mt-3 space-y-3">
-              {RULE_REFERENCE.map((group) => (
-                <div key={group.title} className="rounded-lg border border-border-default/60 bg-bg-elevated/60 p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold uppercase tracking-widest text-text-tertiary">{group.title}</span>
-                    <span className="orbital-tag">{group.items.length} rules</span>
-                  </div>
-                  <div className="mt-2 space-y-2">
-                    {group.items.map((item) => (
-                      <div key={item.id} className="rounded-md border border-border-default/60 bg-bg-card/40 px-3 py-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono text-xs text-text-tertiary">{item.id}</span>
-                          <span className="text-xs text-text-tertiary">{item.detail}</span>
-                        </div>
-                        <div className="mt-1 text-sm font-semibold text-text-primary">{item.label}</div>
+                <div className="mt-3 space-y-2">
+                  {liveAgents.length === 0 ? (
+                    <div className="rounded-md bg-bg-elevated px-3 py-2 text-sm text-text-tertiary">No registered or inventory agents yet.</div>
+                  ) : (
+                    liveAgents.slice(0, 5).map((agent) => (
+                      <div key={agent.agentId} className="agent-chip flex items-center gap-2">
+                        <span className={`h-2 w-2 rounded-full ${agent.healthStatus === "online" ? "bg-status-success" : agent.healthStatus === "offline" ? "bg-status-danger" : agent.online ? "bg-status-success" : "bg-status-offline"}`} />
+                        <span className="text-sm">{osEmoji(agent.os)}</span>
+                        <span className="flex-1 truncate text-sm text-text-primary">
+                          {agent.hostname && agent.hostname !== "—" ? agent.hostname : agent.agentId}
+                        </span>
+                        <span className="font-mono text-xs text-text-tertiary">{agent.ip}</span>
+                        <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${agent.healthStatus === "online" ? "bg-status-success/15 text-status-success" : agent.healthStatus === "offline" ? "bg-status-danger/15 text-status-danger" : "bg-bg-elevated text-text-tertiary"}`}>
+                          {agent.healthStatus || "unknown"}
+                        </span>
                       </div>
-                    ))}
-                  </div>
+                    ))
+                  )}
                 </div>
-              ))}
+              </div>
+
+              <div className="card-premium p-4 tilt-3d-soft">
+                <p className="text-sm font-medium tracking-widest text-text-tertiary">HOT TARGETS</p>
+                <div className="mt-3 space-y-2">
+                  {hotTargets.length === 0 ? (
+                    <div className="rounded-md bg-bg-elevated px-3 py-2 text-sm text-text-tertiary">No alert targets yet.</div>
+                  ) : (
+                    hotTargets.map((target) => {
+                      const style = SEVERITY_STYLE[target.severity] || SEVERITY_STYLE.low;
+                      return (
+                        <div key={target.ip} className="agent-chip flex items-center gap-2">
+                          <span className={`h-2 w-2 rounded-full ${style.dot}`} />
+                          <span className="flex-1 font-mono text-sm text-text-primary">{target.ip}</span>
+                          <span className={`rounded-sm border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText}`}>
+                            {target.severity.toUpperCase()}
+                          </span>
+                          <span className="font-mono text-md font-semibold text-text-secondary">{target.count}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="card-premium p-4 tilt-3d-soft">
+                <p className="text-sm font-medium tracking-widest text-text-tertiary">SYN RATE (60S)</p>
+                <div className="mt-3 flex h-24 items-end gap-px">
+                  {synHistory.map((value, index) => {
+                    const isAttack = value >= 700;
+                    const height = Math.max(2, Math.round((value / maxBar) * 100));
+                    return (
+                      <div key={`${index}-${value}`} className="flex-1 depth-float" style={{ animationDelay: `${index * 90}ms` }}>
+                        <div
+                          className={`w-full rounded-sm transition-all duration-150 ${isAttack ? "bg-threat-critical/70" : "bg-bg-elevated"}`}
+                          style={{ height: `${height}%` }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 flex items-center justify-between font-mono text-xs text-text-tertiary">
+                  <span>-60s</span>
+                  <span>-45s</span>
+                  <span>-30s</span>
+                  <span>-15s</span>
+                  <span>now</span>
+                </div>
+              </div>
+
+              <div className="card-premium p-4 tilt-3d-soft">
+                <p className="text-sm font-medium tracking-widest text-text-tertiary">DETECTION RULES FIRED</p>
+                <div className="mt-3 space-y-3">
+                  {detectionRows.map((row) => (
+                    <div key={row.id} className="agent-chip flex items-center gap-2">
+                      <span className="rounded-sm bg-bg-elevated px-2 py-0.5 font-mono text-xs text-accent-primary">{row.id}</span>
+                      <p className="flex-1 text-sm text-text-secondary">{row.name}</p>
+                      <div className="flex items-end gap-px">
+                        {row.sparkline.map((v, idx) => (
+                          <span
+                            key={`${row.id}-${idx}`}
+                            className={row.sevStyle.bar}
+                            style={{ width: "3px", height: `${v}px` }}
+                          />
+                        ))}
+                      </div>
+                      <span className={`font-mono text-md font-bold ${row.sevStyle.valueText}`}>{row.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="card-premium p-4 tilt-3d-soft">
+                <p className="text-sm font-medium tracking-widest text-text-tertiary">RULES REFERENCE</p>
+                <div className="mt-3 space-y-3">
+                  {RULE_REFERENCE.map((group) => (
+                    <div key={group.title} className="rounded-lg border border-border-default/60 bg-bg-elevated/60 p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold uppercase tracking-widest text-text-tertiary">{group.title}</span>
+                        <span className="orbital-tag">{group.items.length} rules</span>
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {group.items.map((item) => (
+                          <div key={item.id} className="rounded-md border border-border-default/60 bg-bg-card/40 px-3 py-2">
+                            <div className="flex items-center justify-between">
+                              <span className="font-mono text-xs text-text-tertiary">{item.id}</span>
+                              <span className="text-xs text-text-tertiary">{item.detail}</span>
+                            </div>
+                            <div className="mt-1 text-sm font-semibold text-text-primary">{item.label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      </section>
+          </section>
+        </>
+      )}
     </div>
   );
 }
