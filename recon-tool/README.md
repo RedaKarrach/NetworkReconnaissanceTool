@@ -1,7 +1,7 @@
 # Network Intrusion Detection System (NIDS)
-## Projet de Fin d'Études — EMSI 4CIRG1
+## Projet de Fin d'Annee 
 
-> ⚠️  LAB UNIQUEMENT — réseau VirtualBox isolé, jamais sur un réseau tiers.
+  LAB UNIQUEMENT — réseau VirtualBox isolé, jamais sur un réseau tiers.
 
 ---
 
@@ -200,4 +200,3 @@ docker-compose down -v             # Arrêter + supprimer données
 
 Scapy · Django 4.2 · Django Channels · MongoDB · React 18 · D3.js · ReportLab · Docker Compose
 
-*EMSI 4CIRG1 — 2024/2025*
