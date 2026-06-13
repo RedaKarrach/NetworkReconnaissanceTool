@@ -389,6 +389,8 @@ export default function Dashboard({ onSessionStart }) {
   const [activeTab, setActiveTab] = useState("map");
   const [selectedEndpointIp, setSelectedEndpointIp] = useState(null);
   const [riskScores, setRiskScores] = useState({});
+  const [historyAlerts, setHistoryAlerts] = useState([]);
+  const [historyPortResults, setHistoryPortResults] = useState([]);
 
   const [runningScanType, setRunningScanType] = useState(null);
   const [completedScanType, setCompletedScanType] = useState(null);
@@ -427,6 +429,55 @@ export default function Dashboard({ onSessionStart }) {
   }, [getThreads, onSessionStart]);
 
   const ws = useWebSocket(sessionId);
+
+  useEffect(() => {
+    let active = true;
+    let timer = null;
+
+    async function loadHistory() {
+      try {
+        const [alertsRes, resultsRes] = await Promise.all([
+          fetch(`${API_BASE}/api/alerts/history/live/?limit=200`),
+          fetch(`${API_BASE}/api/results/live/`),
+        ]);
+
+        if (alertsRes.ok) {
+          const alertsData = await alertsRes.json();
+          if (active && Array.isArray(alertsData?.items)) {
+            setHistoryAlerts(alertsData.items);
+          }
+        }
+
+        if (resultsRes.ok) {
+          const resultsData = await resultsRes.json();
+          const ports = [];
+          (resultsData?.hosts || []).forEach((host) => {
+            const ip = normalizeIp(host?.ip);
+            (host?.ports || []).forEach((port) => {
+              ports.push({
+                ip,
+                port: port.port,
+                protocol: port.protocol || "tcp",
+                status: port.status || "unknown",
+                banner: port.banner || "",
+                timestamp: resultsData?.timestamp || new Date().toISOString(),
+              });
+            });
+          });
+          if (active) setHistoryPortResults(ports);
+        }
+      } catch {
+        // Best-effort only.
+      }
+    }
+
+    loadHistory();
+    timer = setInterval(loadHistory, 5000);
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, []);
 
   const endpointHosts = useMemo(() => {
     const byKey = new Map();
@@ -660,9 +711,40 @@ export default function Dashboard({ onSessionStart }) {
     setFpIp(host.ip);
   }, []);
 
+  function mergeAlerts(primary, fallback) {
+    const items = [...(primary || []), ...(fallback || [])];
+    const seen = new Set();
+    return items.filter((alert) => {
+      const key = [
+        alert?.type,
+        alert?.src_ip,
+        alert?.dst_ip,
+        alert?.message,
+        alert?.timestamp,
+      ].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function mergePortResults(primary, fallback) {
+    const items = [...(primary || []), ...(fallback || [])];
+    const seen = new Set();
+    return items.filter((item) => {
+      const key = [item?.ip, item?.port, item?.protocol, item?.status].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  const mergedAlerts = useMemo(() => mergeAlerts(ws.alerts, historyAlerts), [ws.alerts, historyAlerts]);
+  const mergedPortResults = useMemo(() => mergePortResults(ws.portResults, historyPortResults), [ws.portResults, historyPortResults]);
+
   const vulnerabilities = useMemo(() => {
-    return buildVulnerabilityLog(ws.alerts, ws.portResults);
-  }, [ws.alerts, ws.portResults]);
+    return buildVulnerabilityLog(mergedAlerts, mergedPortResults);
+  }, [mergedAlerts, mergedPortResults]);
 
   const selectedEndpoint = useMemo(() => {
     if (!selectedEndpointIp) return endpointHosts[0] || null;

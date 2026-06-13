@@ -17,6 +17,50 @@
       "technique_id": "T1046"
     },
     {
+      "name": "ARP Spoof / Adversary-in-the-Middle",
+      "pattern_type": "regex",
+      "patterns": [
+        "arp spoof",
+        "arp_spoof",
+        "arp anomaly",
+        "arp spoof detected",
+        "arp spoof started"
+      ],
+      "tactic": "Credential Access",
+      "tactic_id": "TA0006",
+      "technique": "Adversary-in-the-Middle",
+      "technique_id": "T1557"
+    },
+    {
+      "name": "SYN Flood",
+      "pattern_type": "regex",
+      "patterns": [
+        "syn flood",
+        "syn_flood",
+        "syn flood started",
+        "distributed syn flood",
+        "syn_flood_distributed"
+      ],
+      "tactic": "Impact",
+      "tactic_id": "TA0040",
+      "technique": "Network Denial of Service",
+      "technique_id": "T1498"
+    },
+    {
+      "name": "ICMP Redirect / Adversary-in-the-Middle",
+      "pattern_type": "regex",
+      "patterns": [
+        "icmp redirect",
+        "icmp_redirect",
+        "icmp redirect started",
+        "icmp redirect detected"
+      ],
+      "tactic": "Credential Access",
+      "tactic_id": "TA0006",
+      "technique": "Adversary-in-the-Middle",
+      "technique_id": "T1557"
+    },
+    {
       "name": "SMBv1 Detected",
       "pattern_type": "regex",
       "patterns": [

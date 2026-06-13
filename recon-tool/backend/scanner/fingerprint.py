@@ -140,12 +140,21 @@ def fingerprint_os(
     }
 
     # ── Probe 1: send plain SYN to collect TTL + window size from SYN-ACK ──
-    syn = IP(dst=target_ip) / TCP(
-        dport=probe_port,
-        sport=RandShort(),
-        flags="S"    # SYN only
-    )
-    syn_resp = sr1(syn, timeout=3, verbose=0)
+    probe_ports = [probe_port, 22, 443, 445, 3389]
+    probe_ports = [p for i, p in enumerate(probe_ports) if p and p not in probe_ports[:i]]
+    syn_resp = None
+    used_port = probe_port
+
+    for port in probe_ports:
+        syn = IP(dst=target_ip) / TCP(
+            dport=port,
+            sport=RandShort(),
+            flags="S"    # SYN only
+        )
+        syn_resp = sr1(syn, timeout=3, verbose=0)
+        if syn_resp:
+            used_port = port
+            break
 
     ttl_guess    = ("unknown", 0.0)
     window_guess = ("unknown", 0.0)
@@ -161,7 +170,7 @@ def fingerprint_os(
         # RST the half-open connection
         from scapy.all import send
         rst = IP(dst=target_ip) / TCP(
-            dport=probe_port,
+            dport=used_port,
             sport=syn_resp[TCP].dport,
             flags="R",
             seq=syn_resp[TCP].ack
@@ -186,7 +195,7 @@ def fingerprint_os(
     if stop_flag and stop_flag.is_set():
         return result
 
-    xmas_guess = _xmas_probe(target_ip, probe_port)
+    xmas_guess = _xmas_probe(target_ip, used_port)
     result["xmas_result"] = xmas_guess[0]
 
     if on_packet:
@@ -219,7 +228,8 @@ def fingerprint_os(
     result["details"] = {
         "ttl_signal":    ttl_guess[0],
         "window_signal": window_guess[0],
-        "xmas_signal":   xmas_guess[0]
+        "xmas_signal":   xmas_guess[0],
+        "probe_port":    used_port,
     }
 
     return result

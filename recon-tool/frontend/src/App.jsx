@@ -424,9 +424,7 @@ export default function App() {
         </div>
 
         {/* Footer */}
-        <div className="border-t border-border-premium/60 px-3 py-3 text-center">
-          <p className="text-xs font-medium text-text-tertiary">v1.0.0</p>
-        </div>
+        <div className="border-t border-border-premium/60 px-3 py-3 text-center" />
       </aside>
 
       {/* Main content */}

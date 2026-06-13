@@ -29,7 +29,7 @@ const SEVERITY_STYLE = {
     pulse: true,
   },
   high: {
-    bar: "bg-threat-high",
+    bar: "bg-threat-high",  
     dot: "bg-threat-high",
     badgeBg: "bg-threat-high-bg",
     badgeBorder: "border-threat-high-border",
@@ -179,6 +179,7 @@ function osEmoji(name) {
   return "❓";
 }
 
+
 function resolveMitreForAlert(alert, mappings) {
   if (alert.mitre_technique_id || alert.mitre_tactic_id) return alert;
   if (!Array.isArray(mappings) || mappings.length === 0) return alert;
@@ -225,7 +226,7 @@ function resolveMitreForAlert(alert, mappings) {
 
 function KpiCard({ title, value, subLabel, valueClass, subLabelClass, flash }) {
   return (
-    <div className="card-premium relative overflow-hidden p-5">
+    <div className="card-premium relative overflow-hidden p-4">
       {flash && (
         <div
           className="absolute inset-0 bg-accent-muted"
@@ -233,10 +234,10 @@ function KpiCard({ title, value, subLabel, valueClass, subLabelClass, flash }) {
         />
       )}
       <p className="relative z-10 text-xs font-semibold tracking-wider text-text-tertiary uppercase">{title}</p>
-      <p className={`relative z-10 mt-2 font-mono font-bold leading-none ${valueClass}`} style={{ fontSize: "28px" }}>
+      <p className={`relative z-10 mt-2 font-mono font-semibold leading-none ${valueClass}`} style={{ fontSize: "22px" }}>
         {value}
       </p>
-      <p className={`relative z-10 mt-1 text-xs ${subLabelClass}`}>{subLabel}</p>
+      <p className={`relative z-10 mt-1 text-[11px] ${subLabelClass}`}>{subLabel}</p>
     </div>
   );
 }
@@ -591,8 +592,8 @@ export default function SOCDashboard() {
             />
           </section>
 
-          <section className="flex min-h-0 flex-1 gap-3">
-            <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1.6 }}>
+          <section className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,1fr)]">
+            <div className="flex min-h-0 flex-1 flex-col gap-3 min-w-0">
               <div className="panel-premium alert-panel-shell flex min-h-0 flex-1 flex-col tilt-3d-soft">
                 <div className="flex items-center border-b border-border-default/60 px-4 py-3">
                   <p className="text-sm font-medium tracking-widest text-text-tertiary">ALERT FEED</p>
@@ -623,7 +624,7 @@ export default function SOCDashboard() {
               </div>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col gap-3" style={{ flex: 1 }}>
+            <div className="flex min-h-0 flex-1 flex-col gap-3 min-w-0">
               <div className="card-premium p-4 tilt-3d-soft">
                 <p className="text-sm font-medium tracking-widest text-text-tertiary">LIVE ENDPOINT STATUS</p>
                 {healthError && (

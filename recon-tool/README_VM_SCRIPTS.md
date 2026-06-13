@@ -121,6 +121,4 @@ python3 /home/kali/recon-agents/inventory_agent.py
 
 ## 6) Notes importantes
 
-- Usage strictement labo isole (`192.168.56.0/24`).
-- Les attaques doivent rester dans un environnement autorise.
 - Si tu changes les IP VM, adapte les constantes dans `attacker.py` et `victim_agent.py`.

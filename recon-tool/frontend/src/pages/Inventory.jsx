@@ -170,9 +170,6 @@ export default function Inventory() {
               >
                 {saving ? "Saving..." : "Add Agent"}
               </button>
-              <div className="text-xs text-text-tertiary">
-                Optional manual registry. For full automation, install VM autostart with inventory_agent.py --install-autostart.
-              </div>
             </div>
           </form>
         </div>

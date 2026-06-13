@@ -74,6 +74,18 @@ def _log_packet(session, pkt_dict):
         protocol  = pkt_dict.get("protocol", ""),
     ).save()
     _trim_packet_logs(session)
+    if getattr(session, "session_id", None) != "live":
+        live_session = _get_live_session()
+        PacketLog(
+            session   = live_session,
+            summary   = pkt_dict.get("summary", ""),
+            flags     = pkt_dict.get("flags", ""),
+            ttl       = pkt_dict.get("ttl", 0),
+            src_ip    = pkt_dict.get("src_ip", ""),
+            dst_ip    = pkt_dict.get("dst_ip", ""),
+            protocol  = pkt_dict.get("protocol", ""),
+        ).save()
+        _trim_packet_logs(live_session)
     broadcast_packet(session.session_id, pkt_dict)
     broadcast_packet("live", pkt_dict)
 
@@ -120,6 +132,26 @@ def _check_packet_rate_limit(session_id):
 def _emit_alert(session, alert_dict):
     """Broadcast alert to session and live SOC stream, with trimming."""
     alert_dict = detection.enrich_alert_with_mitre(alert_dict)
+    now = datetime.utcnow()
+
+    def _save_alert(session_obj):
+        try:
+            Alert(
+                session=session_obj,
+                type=alert_dict.get("type"),
+                src_ip=alert_dict.get("src_ip"),
+                dst_ip=alert_dict.get("dst_ip"),
+                severity=alert_dict.get("severity", "medium"),
+                message=alert_dict.get("message"),
+                timestamp=now,
+            ).save()
+        except Exception:
+            pass
+
+    _save_alert(session)
+    if getattr(session, "session_id", None) != "live":
+        live_session = _get_live_session()
+        _save_alert(live_session)
     payload = {
         "event_type": "alert",
         **alert_dict,
@@ -147,6 +179,8 @@ def _emit_alert(session, alert_dict):
         pass
 
     _trim_alert_logs(session)
+    if getattr(session, "session_id", None) != "live":
+        _trim_alert_logs(_get_live_session())
 
 
 class MitreMappingView(APIView):
@@ -269,9 +303,24 @@ def _is_ip_reachable(ip: str) -> bool:
 
     try:
         result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
     except Exception:
-        return False
+        pass
+
+    # Fallback: try a quick TCP connect to common ports (ICMP may be blocked).
+    try:
+        import socket
+        for port in (22, 80, 443, 445, 3389):
+            try:
+                with socket.create_connection((ip, port), timeout=0.6):
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return False
 
 
 def _has_recent_inventory(ip: str) -> bool:
@@ -684,9 +733,9 @@ class OSFingerprintView(APIView):
         if not _is_ip_allowed(ip):
             return Response({"error": "ip not in allowed subnet"}, status=400)
 
-        # OS fingerprinting only makes sense for a live target.
+        # If ping is blocked but the target is within allowed subnet, attempt anyway.
         if not (_is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)):
-            return Response({"error": "ip unreachable"}, status=404)
+            pass
 
         session, session_id = _new_session()
         initiated_by = _initiated_by(request)
@@ -815,6 +864,7 @@ class ARPSpoofView(APIView):
 
         session, session_id = _new_session()
         initiated_by = _initiated_by(request)
+        thread_id_ref = {"id": None}
 
         attack_log = AttackLog(
             session     = session,

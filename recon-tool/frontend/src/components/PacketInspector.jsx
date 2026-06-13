@@ -221,7 +221,7 @@ export default function PacketInspector({ packets = [], pps = 0, wsStatus = "dis
           </div>
         ) : (
           <>
-            {[...filtered].reverse().map((pkt, i) => (
+            {filtered.map((pkt, i) => (
               <PacketRow key={i} pkt={pkt} idx={i} />
             ))}
             <div ref={bottomRef} />

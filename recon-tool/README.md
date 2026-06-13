@@ -84,11 +84,11 @@ pip install scapy requests psutil
 python agents/inventory_agent.py --agent-id windows10 --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/ --install-autostart
 python agents/victim_agent.py --agent-name windows10 --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/ --install-autostart
 
-# 4. Optional run now (without reboot)
+# 4. Run now (without reboot)
 python agents/inventory_agent.py --agent-id windows10 --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/
 python agents/victim_agent.py --agent-name windows10 --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/
 
-# 5. Optional removal
+# 5. Removal
 python agents/inventory_agent.py --uninstall-autostart
 python agents/victim_agent.py --uninstall-autostart
 ```
@@ -107,11 +107,11 @@ scp agents/victim_agent.py ubuntu@192.168.56.x:~/Desktop/
 sudo python3 ~/Desktop/inventory_agent.py --agent-id ubuntu-vm --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/ --install-autostart
 sudo python3 ~/Desktop/victim_agent.py --agent-name ubuntu-vm --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/ --install-autostart
 
-# 4. Optional run now (without reboot)
+# 4. Run now (without reboot)
 sudo python3 ~/Desktop/inventory_agent.py --agent-id ubuntu-vm --agent-token change-me --dashboard-url http://192.168.56.1:8000/api/agents/inventory/
 sudo python3 ~/Desktop/victim_agent.py --agent-name ubuntu-vm --dashboard-url http://192.168.56.1:8000/api/alerts/ --packet-url http://192.168.56.1:8000/api/packets/
 
-# 5. Optional removal
+# 5. Removal
 sudo python3 ~/Desktop/inventory_agent.py --uninstall-autostart
 sudo python3 ~/Desktop/victim_agent.py --uninstall-autostart
 ```

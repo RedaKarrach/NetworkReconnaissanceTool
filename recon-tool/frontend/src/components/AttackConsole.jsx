@@ -44,19 +44,28 @@ const ATTACK_STYLE = {
   arp_spoof: {
     iconWrap: "bg-threat-high/15",
     iconText: "text-threat-high-text",
-    launchBtn: "bg-gradient-to-r from-threat-high to-threat-medium text-text-primary",
+    launchBtn: "bg-gradient-to-r from-accent-primary to-accent-hover text-text-primary",
   },
   syn_flood: {
     iconWrap: "bg-threat-critical/15",
     iconText: "text-threat-critical-text",
-    launchBtn: "bg-gradient-to-r from-threat-critical to-threat-high text-text-primary",
+    launchBtn: "bg-gradient-to-r from-accent-primary to-accent-hover text-text-primary",
   },
   icmp_redirect: {
     iconWrap: "bg-os-macos/15",
     iconText: "text-os-macos",
-    launchBtn: "bg-gradient-to-r from-os-macos to-accent-primary text-text-primary",
+    launchBtn: "bg-gradient-to-r from-accent-primary to-accent-hover text-text-primary",
   },
 };
+
+function LaunchIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </svg>
+  );
+}
 
 function AttackIcon({ attackId, className }) {
   if (attackId === "arp_spoof") {
@@ -146,9 +155,10 @@ function AttackCard({ attack, activeThreads, onLaunch, onStop }) {
         {!isRunning ? (
           <button
             onClick={() => onLaunch(attack.id, params)}
-            className={`w-full rounded-md py-3 font-semibold transition-all duration-150 hover:-translate-y-px hover:shadow-danger active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 ${style.launchBtn}`}
+            className={`flex w-full items-center justify-center gap-2 rounded-md py-3 font-semibold transition-all duration-150 hover:-translate-y-px hover:shadow-danger active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 ${style.launchBtn}`}
           >
-            ⚡ Launch Attack
+            <LaunchIcon className="h-4 w-4" />
+            Launch Attack
           </button>
         ) : (
           <button
@@ -245,12 +255,6 @@ export default function AttackConsole({ onSessionStart }) {
 
   return (
     <div>
-      {/* Warning banner */}
-      <div className="mb-5 flex items-center gap-2 rounded-xl border border-threat-high/40 bg-threat-high/10 px-4 py-3.5 text-sm text-threat-high">
-        <span className="text-threat-high">⚠</span>
-        <span>Authorized lab environment only — 192.168.56.0/24 network</span>
-      </div>
-
       {/* Attack cards */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {ATTACK_TYPES.map((a) => (

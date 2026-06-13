@@ -256,8 +256,8 @@ export default function SessionReport({ sessionId }) {
                     <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-status-success" : "bg-status-offline"}`} />
                     <span className="font-mono text-sm text-text-primary">{host.ip || "—"}</span>
                     <span className="font-mono text-xs text-text-tertiary">{host.mac || "—"}</span>
-                    <span className="text-sm text-text-primary">
-                      <span className="mr-1">{os.emoji}</span>
+                    <span className="text-sm text-text-primary inline-flex items-center gap-1">
+                      <span>{os.emoji}</span>
                       <span className={os.className}>{host.os_guess || "unknown"}</span>
                     </span>
                     <span className="font-mono text-sm text-text-primary">{openPorts.length}</span>
