@@ -26,3 +26,10 @@ Thumbs.db
 
 # Ignore embedded repo if present
 NetworkReconnaissanceTool/
+
+# ML datasets and trained model binaries (large; not committed)
+recon-tool/ml/datasets/*.csv
+recon-tool/ml/artifacts/*.joblib
+recon-tool/ml/artifacts/*.pkl
+recon-tool/ml/artifacts/*.onnx
+recon-tool/ml/artifacts/metrics.json

@@ -69,7 +69,7 @@ export default function LoginPage({ onLogin }) {
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2.5 text-sm text-text-primary outline-none transition-colors duration-120 placeholder:text-text-tertiary focus:border-accent-primary"
+                className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2.5 text-sm text-text-primary outline-none transition-colors duration-150 placeholder:text-text-tertiary focus:border-accent-primary"
                 placeholder="analyst@recon.local"
                 required
               />
@@ -86,14 +86,14 @@ export default function LoginPage({ onLogin }) {
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2.5 pr-11 text-sm text-text-primary outline-none transition-colors duration-120 placeholder:text-text-tertiary focus:border-accent-primary"
+                  className="w-full rounded-md border border-border-default bg-bg-input px-3 py-2.5 pr-11 text-sm text-text-primary outline-none transition-colors duration-150 placeholder:text-text-tertiary focus:border-accent-primary"
                   placeholder="Password"
                   required
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((prev) => !prev)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary transition-colors duration-120 hover:text-text-secondary"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary transition-colors duration-150 hover:text-text-secondary"
                   aria-label={showPassword ? "Hide password" : "Show password"}
                 >
                   {showPassword ? <EyeOffIcon /> : <EyeIcon />}

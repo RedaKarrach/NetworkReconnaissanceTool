@@ -118,6 +118,8 @@ function normalizeSeverity(value) {
 }
 
 function normalizeAlert(input) {
+  const isMl = input?.source === "ml" || input?.event_type === "ml_alert" ||
+    String(input?.type || "").toLowerCase().startsWith("ml_");
   return {
     event_type: input?.event_type || "alert",
     type: input?.type || "unknown_rule",
@@ -130,6 +132,11 @@ function normalizeAlert(input) {
     mitre_tactic_id: input?.mitre_tactic_id || "",
     mitre_technique: input?.mitre_technique || "",
     mitre_technique_id: input?.mitre_technique_id || "",
+    // ML triage fields (present only for ml_alert events).
+    is_ml: isMl,
+    confidence: typeof input?.confidence === "number" ? input.confidence : null,
+    priority: typeof input?.priority === "number" ? input.priority : null,
+    model_version: input?.model_version || "",
   };
 }
 
@@ -255,14 +262,31 @@ function AlertRow({ alert, isNewest }) {
       <div className={`${style.bar} rounded-full`} style={{ width: "3px" }} />
       <div className={`mt-1 h-2 w-2 rounded-full ${style.dot}`} />
       <div className="flex-1 overflow-hidden">
-        <p className="font-semibold text-text-primary" style={{ fontSize: "12px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-          {alert.message}
-        </p>
-        <p className="mt-1 text-sm text-text-tertiary">src: {alert.src_ip}</p>
+        <div className="flex items-center gap-2">
+          {alert.is_ml && (
+            <span
+              className="inline-flex items-center rounded border border-accent-border bg-accent-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-primary"
+              title={alert.model_version ? `model ${alert.model_version}` : "machine-learning detection"}
+            >
+              AI
+            </span>
+          )}
+          <p className="font-semibold text-text-primary" style={{ fontSize: "12px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            {alert.message}
+          </p>
+        </div>
+        <p className="mt-1 text-sm text-text-tertiary">src: <span className="font-mono">{alert.src_ip}</span></p>
         <p className="text-sm text-text-tertiary">rule: {alert.type}</p>
+        {alert.is_ml && (alert.confidence !== null || alert.priority !== null) && (
+          <p className="mt-0.5 font-mono text-xs text-text-tertiary">
+            {alert.confidence !== null ? `confidence ${Math.round(alert.confidence * 100)}%` : ""}
+            {alert.confidence !== null && alert.priority !== null ? " · " : ""}
+            {alert.priority !== null ? `priority ${alert.priority}` : ""}
+          </p>
+        )}
       </div>
       <div className="ml-2 flex flex-col items-end gap-1">
-        <span className={`alert-badge-3d rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText} ${style.pulse ? "animate-pulse-critical" : ""}`}>
+        <span className={`alert-badge-3d rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText}`}>
           {alert.severity.toUpperCase()}
         </span>
         <span className="font-mono text-xs text-text-tertiary">{formatTime(alert.timestamp)}</span>

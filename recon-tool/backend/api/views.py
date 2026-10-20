@@ -1999,6 +1999,13 @@ class InboundPacketView(APIView):
         # Passive detection on the VM-reported packet stream — one engine.
         detection.process_packet(session, pkt, on_alert=lambda a: _emit_alert(session, a))
 
+        # Feed the classic-ML engine (no-op unless ML_ENABLED + artifacts present).
+        try:
+            import ml_bridge
+            ml_bridge.feed_packet(pkt)
+        except Exception:
+            pass
+
         broadcast_packet("live", pkt)
 
         return Response({"status": "ok"}, status=201)

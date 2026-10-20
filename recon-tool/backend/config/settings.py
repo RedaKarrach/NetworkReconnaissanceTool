@@ -20,6 +20,10 @@ API_AUTH_TOKEN = os.environ.get("API_AUTH_TOKEN", "")
 # Real enforcement is lab-only — see docs/ARCHITECTURE.md.
 IPS_ENFORCE = os.environ.get("IPS_ENFORCE", "false").strip().lower() in {"1", "true", "yes"}
 
+# Classic-ML scoring + triage. Off by default; degrades gracefully if the ml
+# package, sklearn, or trained artifacts are missing. See recon-tool/ml/.
+ML_ENABLED = os.environ.get("ML_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [

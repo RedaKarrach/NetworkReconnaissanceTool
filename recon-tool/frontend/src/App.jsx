@@ -311,7 +311,7 @@ export default function App() {
                       key={item.id}
                       type="button"
                       onClick={() => handleNavSelect(item.id, item.page)}
-                      className={`group relative flex w-full items-center rounded-md px-3 py-2 text-left transition-colors duration-120 ${
+                      className={`group relative flex w-full items-center rounded-md px-3 py-2 text-left transition-colors duration-150 ${
                         active
                           ? "bg-accent-muted border border-accent-border"
                           : "border border-transparent hover:bg-bg-card-hover"
@@ -340,7 +340,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-            className="flex w-full items-center rounded-md border border-border-default px-3 py-2 text-text-tertiary transition-colors duration-120 hover:bg-bg-card-hover hover:text-text-secondary"
+            className="flex w-full items-center rounded-md border border-border-default px-3 py-2 text-text-tertiary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-secondary"
           >
             <ChevronIcon collapsed={isSidebarCollapsed} />
             {!isSidebarCollapsed && <span className="ml-3 text-sm font-medium">Collapse</span>}
@@ -359,7 +359,7 @@ export default function App() {
             ) : (
               sidebarAgents.map((agent) => (
                 <div key={agent.id}
-                  className="group/agent rounded-md border border-transparent p-2 transition-colors duration-120 hover:border-border-default hover:bg-bg-card-hover"
+                  className="group/agent rounded-md border border-transparent p-2 transition-colors duration-150 hover:border-border-default hover:bg-bg-card-hover"
                 >
                   <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-2"}`}>
                     <span className={`h-2 w-2 rounded-full ${agent.online ? "bg-status-online" : "bg-status-offline"}`} />
@@ -397,7 +397,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-                className="flex items-center gap-2 rounded-md border border-border-default bg-bg-elevated px-3 py-1.5 text-sm font-medium text-text-secondary transition-colors duration-120 hover:bg-bg-card-hover hover:text-text-primary"
+                className="flex items-center gap-2 rounded-md border border-border-default bg-bg-elevated px-3 py-1.5 text-sm font-medium text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
                 aria-label="Toggle light and dark mode"
                 title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               >
