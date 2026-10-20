@@ -10,6 +10,8 @@
    Legacy effect class names are kept but flat/no-op so existing markup is calm.
    ═══════════════════════════════════════════════ */
 
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -290,23 +292,25 @@
     margin: 0;
     background-color: var(--color-bg-app);
     color: var(--color-text-primary);
-    /* GitHub's system UI stack — professional, no webfont, no AI-template look. */
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
-      Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    /* Roboto — the observability-tool (Splunk / Grafana) look. */
+    font-family: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Helvetica, Arial, sans-serif;
     font-size: 14px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
 
-  /* Monospace strictly for machine data (IP/port/MAC/timestamp/hash). */
+  /* Monospace strictly for machine data (IP/port/MAC/timestamp/hash).
+     Roboto Mono has a plain, unambiguous zero. tnum keeps columns aligned. */
   .font-mono,
   code,
   kbd,
   samp {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-      "Liberation Mono", "Courier New", monospace;
+    font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+      "Liberation Mono", monospace;
     font-variant-ligatures: none;
+    font-variant-numeric: tabular-nums;
   }
 }
 

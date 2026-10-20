@@ -73,12 +73,12 @@ module.exports = {
       },
       fontFamily: {
         sans: [
-          "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans",
+          "Roboto", "-apple-system", "BlinkMacSystemFont", "Segoe UI",
           "Helvetica", "Arial", "sans-serif",
         ],
         mono: [
-          "ui-monospace", "SFMono-Regular", "SF Mono", "Menlo", "Consolas",
-          "Liberation Mono", "Courier New", "monospace",
+          "Roboto Mono", "ui-monospace", "SFMono-Regular", "Menlo", "Consolas",
+          "Liberation Mono", "monospace",
         ],
       },
       fontSize: {
