@@ -41,7 +41,10 @@ export default function LoginPage({ onLogin }) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg-app px-4">
+    <div
+      className="flex min-h-screen items-center justify-center px-4"
+      style={{ background: "radial-gradient(1000px 500px at 50% -10%, #0e3a3f 0%, #08191d 55%, #050f12 100%)" }}
+    >
       {/* Login card */}
       <div className="w-full max-w-[420px] animate-fade-in">
         <div className="rounded-lg border border-border-default bg-bg-card p-8 shadow-elevation-2">
@@ -50,8 +53,8 @@ export default function LoginPage({ onLogin }) {
             <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md border border-border-default bg-bg-elevated text-accent-primary">
               <ShieldMark className="h-7 w-7" />
             </div>
-            <h1 className="text-xl font-semibold tracking-tight text-text-primary">ReconTool</h1>
-            <p className="mt-1 text-sm text-text-secondary">Network Security Platform</p>
+            <h1 className="text-xl font-semibold tracking-tight text-text-primary">Rempart <span style={{ color: "#2dd4bf" }}>SIEM</span></h1>
+            <p className="mt-1 text-sm text-text-secondary">Network SOC Platform</p>
             <p className="mt-0.5 text-xs text-text-tertiary">Authorized lab environment only</p>
           </div>
 

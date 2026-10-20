@@ -77,7 +77,7 @@ module.exports = {
           "Helvetica", "Arial", "sans-serif",
         ],
         mono: [
-          "Geist Mono", "ui-monospace", "SFMono-Regular", "Menlo", "Consolas",
+          "Roboto Mono", "ui-monospace", "SFMono-Regular", "Menlo", "Consolas",
           "Liberation Mono", "monospace",
         ],
       },

@@ -10,21 +10,21 @@
    Legacy effect class names are kept but flat/no-op so existing markup is calm.
    ═══════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  /* ──── Surfaces (GitHub dark) ──── */
-  --color-bg-app: #0d1117;
-  --color-bg-sidebar: #010409;
-  --color-bg-card: #161b22;
-  --color-bg-card-hover: #1c2128;
-  --color-bg-elevated: #21262d;
-  --color-bg-elevated-premium: #272e37;
-  --color-bg-input: #0d1117;
+  /* ──── Surfaces (Rempart teal) ──── */
+  --color-bg-app: #08191d;
+  --color-bg-sidebar: #061015;
+  --color-bg-card: #0b1f24;
+  --color-bg-card-hover: #0e262c;
+  --color-bg-elevated: #0e262c;
+  --color-bg-elevated-premium: #123035;
+  --color-bg-input: #0b1f24;
 
   --glass-strength: rgba(255, 255, 255, 0.04);
   --glass-border: rgba(255, 255, 255, 0.08);
@@ -62,26 +62,26 @@
   --color-threat-low-glow: #3B82F6;
   --color-threat-low-glow-deep: rgba(59, 130, 246, 0.2);
 
-  /* ──── Accent (GitHub blue) ──── */
-  --color-accent-primary: #2f81f7;
-  --color-accent-hover: #58a6ff;
-  --color-accent-muted: rgba(47, 129, 247, 0.15);
-  --color-accent-border: rgba(47, 129, 247, 0.40);
-  --color-accent-glow: rgba(47, 129, 247, 0.0);
+  /* ──── Accent (Rempart teal) ──── */
+  --color-accent-primary: #2dd4bf;
+  --color-accent-hover: #5eead4;
+  --color-accent-muted: rgba(45, 212, 191, 0.15);
+  --color-accent-border: rgba(45, 212, 191, 0.40);
+  --color-accent-glow: rgba(45, 212, 191, 0.0);
 
   /* ──── Text ──── */
-  --color-text-primary: #e6edf3;
-  --color-text-secondary: #c9d1d9;
-  --color-text-tertiary: #8b949e;
-  --color-text-disabled: #6e7681;
+  --color-text-primary: #e7f3f1;
+  --color-text-secondary: #aec6c2;
+  --color-text-tertiary: #8ba6a2;
+  --color-text-disabled: #5d7470;
 
   /* ──── Semantic ──── */
   --color-status-success: #3fb950;
   --color-status-warning: #d29922;
   --color-status-danger: #DC2626;
   --color-status-info: #3B82F6;
-  --color-status-online: #3fb950;
-  --color-status-offline: #6e7681;
+  --color-status-online: #34d399;
+  --color-status-offline: #5d7470;
 
   /* ──── OS indicators ──── */
   --color-os-linux: #3fb950;
@@ -90,19 +90,19 @@
   --color-os-unknown: #6e7681;
 
   /* ──── Borders ──── */
-  --color-border-default: #30363d;
-  --color-border-elevated: #444c56;
-  --color-border-accent: rgba(47, 129, 247, 0.40);
+  --color-border-default: #16363b;
+  --color-border-elevated: #1f4a50;
+  --color-border-accent: rgba(45, 212, 191, 0.40);
   --color-border-danger: rgba(220, 38, 38, 0.40);
-  --color-border-premium: #30363d;
+  --color-border-premium: #16363b;
 
   /* ──── RGB tokens (Tailwind runtime theme) ──── */
-  --color-bg-app-rgb: 13 17 23;
-  --color-bg-sidebar-rgb: 1 4 9;
-  --color-bg-card-rgb: 22 27 34;
-  --color-bg-card-hover-rgb: 28 33 40;
-  --color-bg-elevated-rgb: 33 38 45;
-  --color-bg-input-rgb: 13 17 23;
+  --color-bg-app-rgb: 8 25 29;
+  --color-bg-sidebar-rgb: 6 16 21;
+  --color-bg-card-rgb: 11 31 36;
+  --color-bg-card-hover-rgb: 14 38 44;
+  --color-bg-elevated-rgb: 14 38 44;
+  --color-bg-input-rgb: 11 31 36;
 
   --color-threat-critical-rgb: 220 38 38;
   --color-threat-critical-bg-rgb: 42 19 21;
@@ -128,15 +128,15 @@
   --color-threat-low-text-rgb: 147 197 253;
   --color-threat-low-glow-rgb: 59 130 246;
 
-  --color-accent-primary-rgb: 47 129 247;
-  --color-accent-hover-rgb: 88 166 255;
-  --color-accent-muted-rgb: 47 129 247;
-  --color-accent-border-rgb: 47 129 247;
+  --color-accent-primary-rgb: 45 212 191;
+  --color-accent-hover-rgb: 94 234 212;
+  --color-accent-muted-rgb: 45 212 191;
+  --color-accent-border-rgb: 45 212 191;
 
-  --color-text-primary-rgb: 230 237 243;
-  --color-text-secondary-rgb: 201 209 217;
-  --color-text-tertiary-rgb: 139 148 158;
-  --color-text-disabled-rgb: 110 118 129;
+  --color-text-primary-rgb: 231 243 241;
+  --color-text-secondary-rgb: 174 198 194;
+  --color-text-tertiary-rgb: 139 166 162;
+  --color-text-disabled-rgb: 93 116 112;
 
   --color-status-success-rgb: 63 185 80;
   --color-status-warning-rgb: 210 153 34;
@@ -150,11 +150,11 @@
   --color-os-macos-rgb: 163 113 247;
   --color-os-unknown-rgb: 110 118 129;
 
-  --color-border-default-rgb: 48 54 61;
-  --color-border-elevated-rgb: 68 76 86;
-  --color-border-accent-rgb: 47 129 247;
+  --color-border-default-rgb: 22 54 59;
+  --color-border-elevated-rgb: 31 74 80;
+  --color-border-accent-rgb: 45 212 191;
   --color-border-danger-rgb: 220 38 38;
-  --color-border-premium-rgb: 48 54 61;
+  --color-border-premium-rgb: 22 54 59;
 }
 
 [data-theme="light"] {
@@ -307,7 +307,8 @@
   code,
   kbd,
   samp {
-    font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    /* Roboto Mono has a plain round zero (no dot/slash). */
+    font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
       "Liberation Mono", monospace;
     font-variant-ligatures: none;
     font-variant-numeric: tabular-nums;
