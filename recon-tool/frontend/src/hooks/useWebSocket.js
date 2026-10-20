@@ -115,6 +115,7 @@ export function useWebSocket(sessionId) {
   const retryTimerRef = useRef(null);
   const retryAttemptRef = useRef(0);
   const closingRef = useRef(false);
+  const heartbeatTimerRef = useRef(null);
 
   // Calculate packets-per-second every second
   useEffect(() => {
@@ -150,6 +151,14 @@ export function useWebSocket(sessionId) {
     ws.onopen = () => {
       retryAttemptRef.current = 0;
       setStatus("connected");
+      // Client heartbeat: keeps the socket alive through proxies and lets a
+      // dead connection surface quickly. The server also pings independently.
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* noop */ }
+        }
+      }, 25000);
     };
 
     ws.onmessage = (e) => {
@@ -215,6 +224,10 @@ export function useWebSocket(sessionId) {
 
     ws.onclose  = () => {
       setStatus("disconnected");
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
       scheduleReconnect();
     };
     ws.onerror  = () => {
@@ -227,6 +240,10 @@ export function useWebSocket(sessionId) {
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
+      }
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();

@@ -70,12 +70,33 @@ MONGO_URI = os.environ.get("MONGO_URI", "mongodb://mongo:27017/recon_db")
 import mongoengine
 mongoengine.connect(host=MONGO_URI)
 
-# Django Channels — InMemoryChannelLayer (no Redis required)
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
+# Django Channels — Redis channel layer.
+#
+# InMemoryChannelLayer queues are bound to Daphne's event loop, so a
+# group_send issued with async_to_sync from a background worker thread is
+# silently dropped. The whole app broadcasts alerts/packets from threads, so a
+# cross-process broker (Redis) is required for live streaming to work.
+#
+# Set CHANNEL_LAYER_BACKEND=memory to force the in-memory layer (tests only;
+# live streaming from worker threads will not work with it).
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+CHANNEL_LAYER_BACKEND = os.environ.get("CHANNEL_LAYER_BACKEND", "redis").strip().lower()
+
+if CHANNEL_LAYER_BACKEND == "memory" or not REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
     }
-}
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [REDIS_URL],
+                "capacity": 2000,          # max messages queued per channel
+                "expiry": 30,              # seconds before an undelivered message expires
+            },
+        }
+    }
 
 STATIC_URL = "/static/"
 

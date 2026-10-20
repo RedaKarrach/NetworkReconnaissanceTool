@@ -21,7 +21,10 @@ from django.conf import settings
 
 from models import ScanSession, Host, PortResult, Alert, PacketLog, AttackLog, HostInventory, AgentRegistry, AuditLog
 from threads.manager import start_thread, stop_thread, get_status, list_threads, cleanup_dead_threads
-from websockets.consumers import broadcast_packet, broadcast_alert, broadcast_status, broadcast_inventory
+from websockets.consumers import (
+    broadcast_packet, broadcast_alert, broadcast_status, broadcast_inventory,
+    broadcast_event, broadcast_ml_alert,
+)
 from audit import audit_log
 
 # Import scanner modules

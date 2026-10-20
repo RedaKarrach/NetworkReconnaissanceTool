@@ -1,9 +1,28 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Network Recon & Attack Simulation Tool
-# No Redis, No Celery — InMemoryChannelLayer + Python threading
+# Redis-backed Channels (live streaming) + MongoDB + Python threading
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
+
+  # ── Redis (Channels layer broker) ───────────────────────────────────────────
+  redis:
+    image: redis:7
+    container_name: recon_redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
   # ── MongoDB ────────────────────────────────────────────────────────────────
   mongo:
@@ -38,10 +57,13 @@ services:
     env_file: .env
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings
+      - REDIS_URL=redis://redis:6379/0
     # OneDrive reparse-point mounts can hide files in Linux containers.
     # Run from the image filesystem in this setup.
     depends_on:
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     # Scapy requires raw socket privileges
     cap_add:

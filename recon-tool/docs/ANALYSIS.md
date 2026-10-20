@@ -97,3 +97,42 @@ Phases 1–7 as specified in the run kit: fix the channel layer first, then the
 correctness bugs, then consolidate detection + add an IPS/response layer + auth,
 then the UI design system and page consolidation, then the classic-ML + triage
 module, then docs, then validation.
+
+---
+
+## Phase 1 — real-time fix (verification)
+
+### What changed
+- `settings.py`: channel layer is now `channels_redis.core.RedisChannelLayer`
+  (hosts from `REDIS_URL`, default `redis://redis:6379/0`). `CHANNEL_LAYER_BACKEND=memory`
+  forces the in-memory layer for tests only.
+- `requirements.txt`: added `channels-redis==4.2.0`.
+- `docker-compose.yml`: added a `redis:7` service with a `redis-cli ping`
+  healthcheck; `django` now `depends_on` redis (healthy) and gets `REDIS_URL`.
+- `websockets/consumers.py`: all broadcasts go through one best-effort
+  `_group_send`; added `broadcast_event` (lifecycle) and `broadcast_ml_alert`;
+  added a 20 s server→client heartbeat and ping/pong handling.
+- `useWebSocket.js`: 25 s client heartbeat; heartbeat timer cleaned up on
+  close/unmount; `ping`/`pong` frames ignored by the stream reducer.
+
+### Verified locally (this host)
+- `python manage.py check` → no issues.
+- `get_channel_layer()` resolves to `RedisChannelLayer`.
+- All six `broadcast_*` helpers import cleanly into `api/views.py`.
+
+### Manual acceptance test (run on a host with Docker or Redis)
+This host has no Docker daemon and no Redis, so the live end-to-end test is
+documented here to run on the lab machine:
+
+1. `cd recon-tool && docker compose up --build` (starts mongo, **redis**, django, react).
+2. Open the dashboard (`http://localhost:3000`), confirm the WS status shows
+   **connected** and a `connection_established` frame arrives.
+3. From another host/VM trigger a scan or attack (e.g. `POST /api/scan/port-scan/`
+   against a lab IP, or run `agents/attacker.py` SYN flood against a victim VM).
+4. **Expected:** alerts **and** packets appear live in the UI with no refresh.
+   Before the fix, only `GET /api/alerts/history/...` (refresh) showed them.
+5. Leave the tab idle > 30 s and confirm the socket stays connected (heartbeat).
+
+A scripted version of steps 1-4 lives in `backend/tests/smoke_ws.py`
+(see Phase 7); it asserts a worker-thread broadcast is delivered over a real
+WebSocket when `REDIS_URL` points at a running Redis.
