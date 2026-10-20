@@ -25,7 +25,7 @@ import socket
 from collections import defaultdict
 
 try:
-    from scapy.all import sniff, ARP, TCP, IP, ICMP, conf, get_if_list, get_if_addr
+    from scapy.all import sniff, ARP, TCP, UDP, IP, ICMP, conf, get_if_list, get_if_addr
 except ImportError:
     print("[!] Scapy not found. Run: pip install scapy")
     sys.exit(1)
@@ -261,7 +261,10 @@ def post_alert(type_, src, dst, severity, message):
         print(f"  [ERR] {e}")
 
 
-def post_packet(summary, flags, src_ip, dst_ip, proto, ttl=0):
+def post_packet(summary, flags, src_ip, dst_ip, proto, ttl=0,
+                dst_port=0, src_port=0, length=0, icmp_type=None):
+    # dst_port / icmp_type / length let the backend engine run its full set of
+    # detections (stealth scans, floods, sweeps, sensitive-port access, DNS).
     payload = {
         "summary": summary,
         "flags": flags,
@@ -269,7 +272,12 @@ def post_packet(summary, flags, src_ip, dst_ip, proto, ttl=0):
         "dst_ip": dst_ip,
         "protocol": proto,
         "ttl": ttl,
+        "dst_port": dst_port,
+        "src_port": src_port,
+        "length": length,
     }
+    if icmp_type is not None:
+        payload["icmp_type"] = icmp_type
     try:
         requests.post(PACKET_URL, json=payload, timeout=2)
     except Exception:
@@ -336,7 +344,10 @@ def on_packet(pkt):
             src_ip=src,
             dst_ip=MY_IP,
             proto="TCP",
-            ttl=pkt[IP].ttl
+            ttl=pkt[IP].ttl,
+            dst_port=int(dport),
+            src_port=int(pkt[TCP].sport),
+            length=len(pkt),
         )
 
         if pkt[TCP].flags != 0x02:
@@ -414,6 +425,8 @@ def on_packet(pkt):
             dst_ip=dst,
             proto="ICMP",
             ttl=pkt[IP].ttl,
+            length=len(pkt),
+            icmp_type=icmp_type,
         )
 
         if icmp_type == 5:
@@ -425,6 +438,24 @@ def on_packet(pkt):
                 message=f"ICMP redirect detected from {src} to {dst}",
             )
             _block_ip(src, "ICMP redirect", now)
+
+    # ── UDP logging (lets the backend flag UDP floods / DNS anomalies) ─────────
+    if IP in pkt and UDP in pkt:
+        src = pkt[IP].src
+        dst = pkt[IP].dst
+        dport = int(pkt[UDP].dport)
+        sport = int(pkt[UDP].sport)
+        post_packet(
+            summary=f"UDP {src}:{sport} → {dst}:{dport}",
+            flags="UDP",
+            src_ip=src,
+            dst_ip=dst,
+            proto="UDP",
+            ttl=pkt[IP].ttl,
+            dst_port=dport,
+            src_port=sport,
+            length=len(pkt),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -519,7 +550,7 @@ def main():
                     break
             except Exception:
                 continue
-        sniff(prn=on_packet, store=False, filter="arp or tcp or icmp", iface=iface)
+        sniff(prn=on_packet, store=False, filter="arp or tcp or udp or icmp", iface=iface)
     except KeyboardInterrupt:
         print("\n[*] Agent stopped.")
     except PermissionError:

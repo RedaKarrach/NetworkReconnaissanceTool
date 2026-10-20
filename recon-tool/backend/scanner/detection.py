@@ -361,46 +361,250 @@ def check_syn_flood(session, dst_ip: str, dst_port: int, on_alert=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Extended passive detection — windowed stores + many signatures
+# ─────────────────────────────────────────────────────────────────────────────
+
+# store -> sid -> key -> [(timestamp, value)]
+_windows = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+
+
+def _bump(store, sid, key, value, window):
+    now = datetime.utcnow()
+    cutoff = now - timedelta(seconds=window)
+    bucket = _windows[store][sid][key]
+    bucket[:] = [(t, v) for (t, v) in bucket if t > cutoff]
+    bucket.append((now, value))
+    return bucket
+
+
+def _reset_window(store, sid, key):
+    _windows[store].get(sid, {}).pop(key, None)
+
+
+# Thresholds (env-tunable); windows in seconds.
+GENERIC_WINDOW        = int(os.environ.get("IDS_GENERIC_WINDOW", "10"))
+ICMP_FLOOD_THRESHOLD  = int(os.environ.get("IDS_ICMP_FLOOD_THRESHOLD", "100"))
+PING_SWEEP_THRESHOLD  = int(os.environ.get("IDS_PING_SWEEP_THRESHOLD", "10"))
+UDP_FLOOD_THRESHOLD   = int(os.environ.get("IDS_UDP_FLOOD_THRESHOLD", "200"))
+HOST_SWEEP_THRESHOLD  = int(os.environ.get("IDS_HOST_SWEEP_THRESHOLD", "10"))
+CONN_RATE_THRESHOLD   = int(os.environ.get("IDS_CONN_RATE_THRESHOLD", "300"))
+DNS_QUERY_THRESHOLD   = int(os.environ.get("IDS_DNS_THRESHOLD", "100"))
+
+# Sensitive services → (label, severity) flagged on connection attempts.
+SENSITIVE_PORTS = {
+    21: ("FTP", "medium"), 23: ("Telnet", "high"), 25: ("SMTP", "low"),
+    69: ("TFTP", "medium"), 110: ("POP3", "low"), 135: ("MSRPC", "medium"),
+    139: ("NetBIOS", "medium"), 143: ("IMAP", "low"), 161: ("SNMP", "medium"),
+    389: ("LDAP", "medium"), 445: ("SMB", "high"), 512: ("rexec", "high"),
+    513: ("rlogin", "high"), 514: ("rsh/syslog", "medium"), 1433: ("MSSQL", "medium"),
+    1521: ("Oracle", "medium"), 2049: ("NFS", "medium"), 3306: ("MySQL", "medium"),
+    3389: ("RDP", "high"), 5432: ("PostgreSQL", "medium"), 5900: ("VNC", "high"),
+    6379: ("Redis", "high"), 9200: ("Elasticsearch", "medium"),
+    11211: ("Memcached", "medium"), 27017: ("MongoDB", "high"),
+}
+
+_TCP_FLAG_ALIASES = {
+    "SYN": "S", "ACK": "A", "FIN": "F", "RST": "R", "PSH": "P",
+    "URG": "U", "ECE": "E", "CWR": "C", "NS": "N",
+}
+
+
+def _normalize_flags(flags) -> frozenset:
+    """Normalize a TCP flags string to a set of single-letter flags."""
+    raw = str(flags or "").upper()
+    out = set()
+    for tok in re.split(r"[\s,\-/|+]+", raw):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok in _TCP_FLAG_ALIASES:
+            out.add(_TCP_FLAG_ALIASES[tok])
+        elif len(tok) <= 4 and set(tok) <= set("SAFRPUECN"):
+            out.update(tok)          # e.g. "SA", "FPU"
+    return frozenset(out)
+
+
+def _extract_dst_port(pkt, summary):
+    for k in ("dst_port", "dport", "dstport"):
+        try:
+            iv = int(pkt.get(k))
+            if 0 < iv <= 65535:
+                return iv
+        except (TypeError, ValueError):
+            pass
+    m = re.search(r":(\d{1,5})(?:\D|$)", summary) or re.search(r"port\s+(\d{1,5})", summary, re.IGNORECASE)
+    if m:
+        iv = int(m.group(1))
+        if 0 < iv <= 65535:
+            return iv
+    return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Unified packet engine
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_packet(session, pkt: dict, on_alert=None):
     """Single entry point for passive detection on an observed packet.
 
-    Parses one packet summary and dispatches to the ARP / SYN-flood / port-sweep
-    / ICMP-redirect checks. This replaces the detection logic that used to be
-    inlined in api.views.InboundPacketView, so there is now exactly one engine.
+    Inspects one observed packet and raises any of a broad set of signatures.
+    Per-signature de-dupe/cooldown is handled by the emitter (api._emit_alert),
+    so detectors may fire freely. Scan-type alerts use dst_ip="multiple" so the
+    cooldown collapses them into one alert per source per window.
     """
+    sid = str(session.session_id)
     proto = str(pkt.get("protocol", "")).upper()
-    flags = str(pkt.get("flags", "")).upper()
+    flags_raw = pkt.get("flags", "")
     summary = str(pkt.get("summary", ""))
-    src_ip = pkt.get("src_ip", "")
-    dst_ip = pkt.get("dst_ip", "")
+    src_ip = str(pkt.get("src_ip", "") or "")
+    dst_ip = str(pkt.get("dst_ip", "") or "")
 
-    if proto == "ARP" and "is at" in summary.lower() and src_ip:
-        mac_match = re.search(r"is\s+at\s+([0-9a-fA-F:]{11,17})", summary)
-        if mac_match:
-            check_arp(session, ip=src_ip, mac=mac_match.group(1), on_alert=on_alert)
+    def emit(alert):
+        if on_alert:
+            on_alert(alert)
 
-    if proto == "TCP" and flags in {"S", "SYN"}:
-        port_match = re.search(r":(\d{1,5})(?:\D|$)", summary)
-        if not port_match:
-            port_match = re.search(r"port\s+(\d{1,5})(?:\D|$)", summary, re.IGNORECASE)
-        dst_port = int(port_match.group(1)) if port_match else 0
-        if 0 < dst_port <= 65535:
+    # LAND attack: identical source and destination.
+    if src_ip and src_ip == dst_ip:
+        emit(_build_alert("land_attack", src_ip=src_ip, dst_ip=dst_ip, severity="high",
+                          message=f"LAND attack: packet with identical src and dst {src_ip}"))
+
+    # Generic high packet-rate from one source (any protocol).
+    if src_ip:
+        with _lock:
+            n = len(_bump("conn", sid, src_ip, 1, GENERIC_WINDOW))
+            if n >= CONN_RATE_THRESHOLD:
+                _reset_window("conn", sid, src_ip)
+            else:
+                n = 0
+        if n:
+            emit(_build_alert("connection_flood", src_ip=src_ip, dst_ip="multiple", severity="high",
+                              message=f"High packet rate from {src_ip}: {n} packets in {GENERIC_WINDOW}s"))
+
+    if proto == "ARP":
+        if "is at" in summary.lower() and src_ip:
+            mac_match = re.search(r"is\s+at\s+([0-9a-fA-F:]{11,17})", summary)
+            if mac_match:
+                check_arp(session, ip=src_ip, mac=mac_match.group(1), on_alert=on_alert)
+
+    elif proto == "TCP":
+        fset = _normalize_flags(flags_raw)
+        dst_port = _extract_dst_port(pkt, summary)
+
+        # Stealth / malformed-flag scans.
+        kind = None
+        if len(fset) == 0:
+            kind = "NULL"
+        elif fset == frozenset({"F"}):
+            kind = "FIN"
+        elif fset == frozenset({"F", "P", "U"}):
+            kind = "XMAS"
+        elif "S" in fset and "F" in fset:
+            kind = "SYN-FIN"
+        elif fset in (frozenset({"F", "U"}), frozenset({"P", "U"}), frozenset({"U"})):
+            kind = "unusual-flag"
+        if kind and src_ip:
+            emit(_build_alert("stealth_scan", src_ip=src_ip, dst_ip="multiple", severity="medium",
+                              message=f"{kind} scan flags from {src_ip}"
+                                      + (f" (port {dst_port})" if dst_port else "")))
+
+        syn_only = fset == frozenset({"S"})
+        if syn_only and dst_port:
             check_syn_flood(session, dst_ip=dst_ip or "unknown", dst_port=dst_port, on_alert=on_alert)
             check_port_sweep(session, src_ip=src_ip or "unknown", dst_port=dst_port, on_alert=on_alert)
 
-    if proto == "ICMP" and ("REDIRECT" in flags or "type=5" in summary.lower()):
-        alert = _build_alert(
-            "icmp_redirect",
-            src_ip=src_ip or "unknown",
-            dst_ip=dst_ip or "unknown",
-            severity="high",
-            message=f"ICMP redirect detected from {src_ip} to {dst_ip}",
-        )
-        if on_alert:
-            on_alert(alert)
+        # RST flood.
+        if fset == frozenset({"R"}) and (dst_ip or src_ip):
+            key = dst_ip or src_ip
+            with _lock:
+                n = len(_bump("rst", sid, key, 1, GENERIC_WINDOW))
+                if n >= CONN_RATE_THRESHOLD:
+                    _reset_window("rst", sid, key)
+                else:
+                    n = 0
+            if n:
+                emit(_build_alert("rst_flood", src_ip=src_ip or "multiple", dst_ip=dst_ip or "multiple",
+                                  severity="medium", message=f"RST flood: {n} RST packets in {GENERIC_WINDOW}s"))
+
+        # Horizontal host sweep (one source, many distinct destinations).
+        if src_ip and dst_ip:
+            with _lock:
+                distinct = len({v for _, v in _bump("hostsweep", sid, src_ip, dst_ip, GENERIC_WINDOW)})
+                if distinct >= HOST_SWEEP_THRESHOLD:
+                    _reset_window("hostsweep", sid, src_ip)
+                else:
+                    distinct = 0
+            if distinct:
+                emit(_build_alert("host_sweep", src_ip=src_ip, dst_ip="multiple", severity="medium",
+                                  message=f"Host sweep from {src_ip}: {distinct} distinct hosts in {GENERIC_WINDOW}s"))
+
+        # Connection attempt to a sensitive service (SYN without ACK).
+        if dst_port in SENSITIVE_PORTS and src_ip and ("S" in fset and "A" not in fset):
+            svc, sev = SENSITIVE_PORTS[dst_port]
+            emit(_build_alert("suspicious_port_access", src_ip=src_ip, dst_ip=dst_ip or "unknown",
+                              severity=sev, message=f"Connection to sensitive service {svc} (TCP {dst_port}) on {dst_ip or 'host'}"))
+
+    elif proto == "UDP":
+        dst_port = _extract_dst_port(pkt, summary)
+        if dst_ip:
+            key = f"{dst_ip}:{dst_port}"
+            with _lock:
+                n = len(_bump("udp", sid, key, 1, GENERIC_WINDOW))
+                if n >= UDP_FLOOD_THRESHOLD:
+                    _reset_window("udp", sid, key)
+                else:
+                    n = 0
+            if n:
+                emit(_build_alert("udp_flood", src_ip=src_ip or "multiple", dst_ip=dst_ip, severity="high",
+                                  message=f"UDP flood targeting {key}: {n} datagrams in {GENERIC_WINDOW}s"))
+
+        if dst_port == 53 and src_ip:
+            with _lock:
+                n = len(_bump("dns", sid, src_ip, 1, GENERIC_WINDOW))
+                if n >= DNS_QUERY_THRESHOLD:
+                    _reset_window("dns", sid, src_ip)
+                else:
+                    n = 0
+            if n:
+                emit(_build_alert("dns_anomaly", src_ip=src_ip, dst_ip=dst_ip or "unknown", severity="medium",
+                                  message=f"Excessive DNS from {src_ip}: {n} queries in {GENERIC_WINDOW}s (possible tunneling/exfil)"))
+
+        if dst_port in SENSITIVE_PORTS and src_ip:
+            svc, sev = SENSITIVE_PORTS[dst_port]
+            emit(_build_alert("suspicious_port_access", src_ip=src_ip, dst_ip=dst_ip or "unknown",
+                              severity=sev, message=f"Traffic to sensitive service {svc} (UDP {dst_port})"))
+
+    elif proto == "ICMP":
+        try:
+            icmp_type = int(pkt.get("icmp_type"))
+        except (TypeError, ValueError):
+            icmp_type = None
+        low = summary.lower()
+
+        if "REDIRECT" in str(flags_raw).upper() or icmp_type == 5 or "redirect" in low:
+            emit(_build_alert("icmp_redirect", src_ip=src_ip or "unknown", dst_ip=dst_ip or "unknown",
+                              severity="high", message=f"ICMP redirect detected from {src_ip} to {dst_ip}"))
+
+        if (icmp_type == 8 or "echo-request" in low or "echo request" in low) and src_ip and dst_ip:
+            with _lock:
+                distinct = len({v for _, v in _bump("pingsweep", sid, src_ip, dst_ip, GENERIC_WINDOW)})
+                if distinct >= PING_SWEEP_THRESHOLD:
+                    _reset_window("pingsweep", sid, src_ip)
+                else:
+                    distinct = 0
+            if distinct:
+                emit(_build_alert("ping_sweep", src_ip=src_ip, dst_ip="multiple", severity="medium",
+                                  message=f"ICMP ping sweep from {src_ip}: {distinct} hosts in {GENERIC_WINDOW}s"))
+
+        if dst_ip:
+            with _lock:
+                n = len(_bump("icmp", sid, dst_ip, 1, GENERIC_WINDOW))
+                if n >= ICMP_FLOOD_THRESHOLD:
+                    _reset_window("icmp", sid, dst_ip)
+                else:
+                    n = 0
+            if n:
+                emit(_build_alert("icmp_flood", src_ip=src_ip or "multiple", dst_ip=dst_ip, severity="high",
+                                  message=f"ICMP flood targeting {dst_ip}: {n} packets in {GENERIC_WINDOW}s"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -413,3 +617,5 @@ def clear_session(session_id: str):
         _arp_cache.pop(session_id, None)
         _port_hits.pop(session_id, None)
         _syn_hits.pop(session_id, None)
+        for store in list(_windows.keys()):
+            _windows[store].pop(session_id, None)

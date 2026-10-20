@@ -199,6 +199,13 @@ package/deps/artifacts → ML silently stays off. See
 | `IDS_SWEEP_WINDOW` | `10` | sweep window (s) |
 | `IDS_SYN_THRESHOLD` | `200` | SYNs for a flood alert |
 | `IDS_SYN_WINDOW` | `10` | SYN window (s) |
+| `IDS_GENERIC_WINDOW` | `10` | window (s) for the rate-based detectors below |
+| `IDS_HOST_SWEEP_THRESHOLD` | `10` | distinct hosts for a host-sweep alert |
+| `IDS_CONN_RATE_THRESHOLD` | `300` | packets/window from one source → connection flood |
+| `IDS_UDP_FLOOD_THRESHOLD` | `200` | datagrams/window → UDP flood |
+| `IDS_ICMP_FLOOD_THRESHOLD` | `100` | ICMP packets/window → ICMP flood |
+| `IDS_PING_SWEEP_THRESHOLD` | `10` | distinct hosts pinged → ping sweep |
+| `IDS_DNS_THRESHOLD` | `100` | DNS queries/window → DNS anomaly |
 | `ALERT_COOLDOWN_SECONDS` | `10` | per-signature alert cooldown |
 | `IPS_ENFORCE` | `false` | `true` marks actions enforced (still lab-only; no real blocking) |
 | `ML_ENABLED` | `false` | enable live ML scoring |

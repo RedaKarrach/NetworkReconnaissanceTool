@@ -66,14 +66,31 @@ to real detections.
 
 ## Detection engine
 
-One engine in `scanner/detection.py`:
+One engine in `scanner/detection.py`, entered through `process_packet` (the
+single dispatch used by `InboundPacketView`). Signatures:
 
-- `check_arp` — same IP, changed MAC within a session → `arp_anomaly`.
-- `check_port_sweep` — ≥ `IDS_SWEEP_THRESHOLD` distinct ports from a source in
-  `IDS_SWEEP_WINDOW`s → `port_sweep`.
-- `check_syn_flood` — ≥ `IDS_SYN_THRESHOLD` SYNs to a dst:port in
-  `IDS_SYN_WINDOW`s → `flood_detected`.
-- `process_packet` — the single dispatch used by `InboundPacketView`.
+| Signature (`type`) | Trigger |
+|--------------------|---------|
+| `arp_anomaly` | same IP, changed MAC within a session |
+| `port_sweep` | ≥ `IDS_SWEEP_THRESHOLD` distinct ports from a source / window |
+| `host_sweep` | one source hits ≥ `IDS_HOST_SWEEP_THRESHOLD` distinct hosts / window |
+| `flood_detected` | ≥ `IDS_SYN_THRESHOLD` SYNs to a dst:port / window |
+| `stealth_scan` | NULL / FIN / XMAS / SYN-FIN / unusual TCP flag combos |
+| `rst_flood` | high rate of RST packets / window |
+| `connection_flood` | ≥ `IDS_CONN_RATE_THRESHOLD` packets from one source / window |
+| `udp_flood` | ≥ `IDS_UDP_FLOOD_THRESHOLD` datagrams to a dst:port / window |
+| `icmp_flood` | ≥ `IDS_ICMP_FLOOD_THRESHOLD` ICMP packets to a host / window |
+| `ping_sweep` | ICMP echo to ≥ `IDS_PING_SWEEP_THRESHOLD` hosts / window |
+| `icmp_redirect` | ICMP type 5 observed |
+| `dns_anomaly` | ≥ `IDS_DNS_THRESHOLD` DNS queries from a source / window |
+| `suspicious_port_access` | connection attempt to a sensitive service (Telnet, SMB, RDP, VNC, Redis, Mongo, …) |
+| `land_attack` | packet with identical source and destination |
+
+Windowed counters live in `_windows[store][session][key]`; per-signature
+de-dupe/cooldown is handled by the emitter. `check_arp`/`check_port_sweep`/
+`check_syn_flood` remain callable for the discovery and attack flows. The VM
+agents report `dst_port`, `src_port`, `length`, `icmp_type`, and UDP packets so
+the engine has the data these signatures need.
 
 The engine only **builds** alert dicts; `api.views._emit_alert` is the single
 persistence/broadcast/cooldown point. The operator's own scans do **not**

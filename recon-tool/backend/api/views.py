@@ -257,15 +257,25 @@ def _emit_alert(session, alert_dict):
 
 # Confirmed detection type → recommended response action.
 _IPS_ACTION_MAP = {
-    "flood_detected":     "block_src_ip",
-    "syn_flood":          "block_src_ip",
-    "arp_anomaly":        "quarantine_host",
-    "port_sweep":         "block_src_ip",
-    "icmp_redirect":      "block_src_ip",
-    "auth_failed":        "block_src_ip",
-    "bruteforce_login":   "block_src_ip",
-    "ssh_bruteforce":     "block_src_ip",
-    "rdp_bruteforce":     "block_src_ip",
+    "flood_detected":        "block_src_ip",
+    "syn_flood":             "block_src_ip",
+    "arp_anomaly":           "quarantine_host",
+    "port_sweep":            "block_src_ip",
+    "host_sweep":            "block_src_ip",
+    "ping_sweep":            "block_src_ip",
+    "stealth_scan":          "block_src_ip",
+    "icmp_redirect":         "block_src_ip",
+    "icmp_flood":            "block_src_ip",
+    "udp_flood":             "block_src_ip",
+    "rst_flood":             "block_src_ip",
+    "connection_flood":      "block_src_ip",
+    "land_attack":           "block_src_ip",
+    "dns_anomaly":           "monitor",
+    "suspicious_port_access": "monitor",
+    "auth_failed":           "block_src_ip",
+    "bruteforce_login":      "block_src_ip",
+    "ssh_bruteforce":        "block_src_ip",
+    "rdp_bruteforce":        "block_src_ip",
 }
 
 
