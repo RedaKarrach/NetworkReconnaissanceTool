@@ -33,3 +33,7 @@ recon-tool/ml/artifacts/*.joblib
 recon-tool/ml/artifacts/*.pkl
 recon-tool/ml/artifacts/*.onnx
 recon-tool/ml/artifacts/metrics.json
+
+# Dev SQLite (Django auth only; not committed)
+db.sqlite3
+*.sqlite3

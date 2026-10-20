@@ -136,3 +136,37 @@ documented here to run on the lab machine:
 A scripted version of steps 1-4 lives in `backend/tests/smoke_ws.py`
 (see Phase 7); it asserts a worker-thread broadcast is delivered over a real
 WebSocket when `REDIS_URL` points at a running Redis.
+
+---
+
+## Phase 7 — validation results
+
+Run on the audit host (no Docker daemon, no Redis, no live lab network):
+
+| Check | Result |
+|-------|--------|
+| `python manage.py check` | **no issues** |
+| `python manage.py migrate --run-syncdb` | **all migrations applied** (SQLite auth) |
+| `docker-compose.yml` structure | **valid**: services mongo/redis/django/react; django `depends_on` redis+mongo healthy; `REDIS_URL` wired |
+| `npm run build` (CI=false) | **Compiled successfully**, no errors |
+| ML pipeline (synthetic data) | train → load → score → `ml_alert` emitted with triage priority, confidence, model version, top features |
+| `tests/smoke_ws.py` | runs; definitive pass requires a running Redis (see note) |
+
+Could **not** be run here (require the lab stack); documented for the lab host:
+
+- Live end-to-end WebSocket streaming under Docker (`docker compose up`, trigger
+  a scan/attack, observe live alerts — see the Phase 1 manual test above).
+- `docker compose config` (Docker not installed; YAML validated with PyYAML).
+- Real Scapy scans/attacks (need root + the isolated lab network).
+
+### Not done as originally scoped (with rationale)
+
+- **Dashboard/SOCDashboard and Endpoints/Inventory were NOT merged.** Audit of
+  `App.jsx` showed these are four distinct, live nav pages (SOC Monitor vs
+  Network Map/Scan Tools; endpoints table vs inventory detail), not redundant
+  duplicates. Merging would delete working features. The only genuinely dead
+  duplicate, `pages/Login.jsx` (unused; `LoginPage` is wired), was deleted.
+  Visual consistency was achieved through the shared design system instead.
+- **ML in Docker:** the backend image build context is `./backend`, so the
+  sibling `ml/` package is not in the image; ML stays off there (graceful). To
+  run ML in Docker, mount `ml/` into the container or widen the build context.
