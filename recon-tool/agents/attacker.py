@@ -1,8 +1,8 @@
 """
 attacker.py — Run on the Kali Linux VM (as root)
 =================================================
-Launches network attacks against the Windows victim VM.
-No agent needed on Kali — this just attacks.
+Launches network attacks against the selected victim VM.
+Windows is the default target, but TARGET_IP can point to the Ubuntu lab host too.
 
 Usage:
     pip install scapy
@@ -18,6 +18,7 @@ import sys
 import threading
 import os
 import ipaddress
+import subprocess
 
 try:
     from scapy.all import (
@@ -36,6 +37,43 @@ VICTIM_PORT  = 80                 # Port to SYN flood
 INTERFACE    = "eth0"             # Kali network interface (auto-detected if possible)
 USE_SPOOFED_SRC = os.environ.get("USE_SPOOFED_SRC", "false").lower() in {"1", "true", "yes"}
 SYN_FLOOD_PPS = int(os.environ.get("SYN_FLOOD_PPS", "50"))  # Packets per second (tunable; default 50)
+LAB_SUBNET = os.environ.get("LAB_SUBNET", "192.168.56.0/24")
+
+
+def _ip_in_lab_subnet(ip_str):
+    try:
+        return ipaddress.ip_address(ip_str) in ipaddress.ip_network(LAB_SUBNET, strict=False)
+    except Exception:
+        return False
+
+
+def _is_target_live(ip_str):
+    try:
+        result = subprocess.run([
+            "ping", "-c", "1", "-W", "1", ip_str
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    try:
+        return bool(getmacbyip(ip_str))
+    except Exception:
+        return False
+
+
+def _ensure_target_ready(ip_str, label="Target"):
+    if not ip_str:
+        print(f"[!] {label} IP is required")
+        return False
+    if not _ip_in_lab_subnet(ip_str):
+        print(f"[!] {label} {ip_str} is outside the allowed lab subnet {LAB_SUBNET}")
+        return False
+    if not _is_target_live(ip_str):
+        print(f"[!] {label} {ip_str} did not answer reachability checks")
+        return False
+    return True
 def _detect_iface():
     try:
         for name in get_if_list():
@@ -59,6 +97,9 @@ def syn_flood(stop_event):
     The victim's SYN_RECV backlog fills up, making the port unresponsive.
     Throttled to SYN_FLOOD_PPS packets per second to avoid overwhelming the backend.
     """
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+
     iface = _detect_iface()
     print(f"[*] SYN Flood started → {VICTIM_IP}:{VICTIM_PORT} on {iface}")
     print(f"[*] Rate limit: {SYN_FLOOD_PPS} pkt/s (set SYN_FLOOD_PPS env var to change)")
@@ -92,6 +133,9 @@ def arp_spoof(stop_event):
       - Tells gateway: "Victim IP is at MY MAC"
     All traffic between them now passes through Kali (MITM).
     """
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+
     print(f"[*] Resolving MACs...")
     iface = _detect_iface()
     victim_mac  = getmacbyip(VICTIM_IP)
@@ -147,8 +191,11 @@ def icmp_redirect(stop_event):
     to come from the gateway, instructing the victim to route traffic
     for 8.8.8.8 through Kali instead of the real gateway.
     """
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+
     iface = _detect_iface()
-    my_ip = conf.iface.ip if hasattr(conf.iface, 'ip') else "192.168.56.10"
+    my_ip = get_if_addr(iface)
     print(f"[*] ICMP Redirect started → telling {VICTIM_IP} to route via {my_ip} on {iface}")
     count = 0
 
@@ -199,6 +246,9 @@ def main():
 
     # Set the global VICTIM_IP to the chosen target
     VICTIM_IP = target
+
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        sys.exit(1)
 
     print(f"  Victim  : {VICTIM_IP}")
     print(f"  Gateway : {GATEWAY_IP}")

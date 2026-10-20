@@ -342,6 +342,38 @@ def _is_registered_agent_ip(ip: str) -> bool:
         return False
 
 
+def _is_live_target_ip(ip: str) -> bool:
+    return _is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)
+
+
+def _validate_attack_ip(ip: str, field_name: str = "target_ip", require_live: bool = True):
+    if not ip:
+        return Response({"error": f"{field_name} required"}, status=400)
+
+    if not _is_ip_allowed(ip):
+        return Response({"error": f"{field_name} not in allowed subnet"}, status=400)
+
+    if require_live and not _is_live_target_ip(ip):
+        return Response({"error": f"{field_name} unreachable"}, status=404)
+
+    return None
+
+
+def _broadcast_reachability_warning(session, action: str, ip: str):
+    """Emit a low-severity advisory when a lab target does not answer reachability probes."""
+    try:
+        _emit_alert(session, {
+            "type": "target_unreachable",
+            "src_ip": "scanner",
+            "dst_ip": ip,
+            "severity": "low",
+            "message": f"{action} continuing even though {ip} did not answer reachability checks",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+    except Exception:
+        pass
+
+
 def _is_ip_allowed(ip: str) -> bool:
     """Restrict scan targets to a configured subnet if provided."""
     allowed = getattr(settings, "SCAN_ALLOWED_SUBNET", "")
@@ -562,15 +594,13 @@ class PortScanView(APIView):
         if not _is_ip_allowed(ip):
             return Response({"error": "ip not in allowed subnet"}, status=400)
 
-        # Fail fast for dead targets, but allow known inventory/registry IPs when ICMP is blocked.
-        if not (_is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)):
-            return Response({"error": "ip unreachable"}, status=404)
-
         session, session_id = _new_session()
         initiated_by = _initiated_by(request)
         thread_id_ref = {"id": None}
-        thread_id_ref = {"id": None}
-        thread_id_ref = {"id": None}
+
+        # In lab networks ICMP may be blocked, so keep going and surface a warning instead of aborting.
+        if not (_is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)):
+            _broadcast_reachability_warning(session, "Port scan", ip)
 
         # Find or create a Host record for this IP
         host_doc = Host.objects(session=session, ip=ip).first()
@@ -733,12 +763,13 @@ class OSFingerprintView(APIView):
         if not _is_ip_allowed(ip):
             return Response({"error": "ip not in allowed subnet"}, status=400)
 
-        # If ping is blocked but the target is within allowed subnet, attempt anyway.
-        if not (_is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)):
-            pass
-
         session, session_id = _new_session()
         initiated_by = _initiated_by(request)
+        thread_id_ref = {"id": None}
+
+        # If ping is blocked but the target is within allowed subnet, attempt anyway and warn.
+        if not (_is_ip_reachable(ip) or _has_recent_inventory(ip) or _is_registered_agent_ip(ip)):
+            _broadcast_reachability_warning(session, "OS fingerprint", ip)
 
         def _run(stop_flag):
             start_time = time.perf_counter()
@@ -862,6 +893,13 @@ class ARPSpoofView(APIView):
         if not target_ip or not gateway_ip:
             return Response({"error": "target_ip and gateway_ip required"}, status=400)
 
+        error = _validate_attack_ip(target_ip, "target_ip", require_live=True)
+        if error:
+            return error
+        error = _validate_attack_ip(gateway_ip, "gateway_ip", require_live=True)
+        if error:
+            return error
+
         session, session_id = _new_session()
         initiated_by = _initiated_by(request)
         thread_id_ref = {"id": None}
@@ -952,6 +990,10 @@ class SYNFloodView(APIView):
         if not target_ip:
             return Response({"error": "target_ip required"}, status=400)
 
+        error = _validate_attack_ip(target_ip, "target_ip", require_live=True)
+        if error:
+            return error
+
         session, session_id = _new_session()
         initiated_by = _initiated_by(request)
         thread_id_ref = {"id": None}
@@ -1040,6 +1082,13 @@ class ICMPRedirectView(APIView):
 
         if not target_ip or not spoofed_gateway or not attacker_ip:
             return Response({"error": "target_ip, spoofed_gateway and attacker_ip required"}, status=400)
+
+        error = _validate_attack_ip(target_ip, "target_ip", require_live=True)
+        if error:
+            return error
+        error = _validate_attack_ip(spoofed_gateway, "spoofed_gateway", require_live=True)
+        if error:
+            return error
 
         session, session_id = _new_session()
         initiated_by = _initiated_by(request)

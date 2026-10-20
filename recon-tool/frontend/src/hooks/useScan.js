@@ -4,7 +4,7 @@
  * Encapsulates all REST API calls to the Django backend.
  * Returns action functions and loading/error state.
  */
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { API_BASE } from "../lib/runtimeConfig";
 
 async function apiPost(path, body) {
@@ -44,20 +44,47 @@ export function useScan() {
     }
   }, []);
 
-  return {
+  const startHostDiscovery = useCallback((subnet) => call(() => apiPost("/api/scan/host-discovery/", { subnet })), [call]);
+  const startPortScan = useCallback((ip, ports, proto) => call(() => apiPost("/api/scan/port-scan/", { ip, ports, protocol: proto })), [call]);
+  const startOsFingerprint = useCallback((ip) => call(() => apiPost("/api/scan/os-fingerprint/", { ip })), [call]);
+  const startArpSpoof = useCallback((target_ip, gateway_ip) => call(() => apiPost("/api/attack/arp-spoof/", { target_ip, gateway_ip })), [call]);
+  const startSynFlood = useCallback((target_ip, target_port) => call(() => apiPost("/api/attack/syn-flood/", { target_ip, target_port })), [call]);
+  const startIcmpRedirect = useCallback(
+    (target_ip, spoofed_gateway, attacker_ip, destination_ip) =>
+      call(() => apiPost("/api/attack/icmp-redirect/", { target_ip, spoofed_gateway, attacker_ip, destination_ip })),
+    [call],
+  );
+  const stopThread = useCallback((thread_id) => call(() => apiPost("/api/attack/stop/", { thread_id })), [call]);
+  const getThreads = useCallback(() => call(() => apiGet("/api/threads/")), [call]);
+  const getThreadStatus = useCallback((thread_id) => call(() => apiGet(`/api/threads/${thread_id}/`)), [call]);
+  const getResults = useCallback((session_id) => call(() => apiGet(`/api/results/${session_id}/`)), [call]);
+
+  return useMemo(() => ({
     loading,
     error,
-    startHostDiscovery: (subnet)           => call(() => apiPost("/api/scan/host-discovery/", { subnet })),
-    startPortScan:      (ip, ports, proto) => call(() => apiPost("/api/scan/port-scan/",      { ip, ports, protocol: proto })),
-    startOsFingerprint: (ip)               => call(() => apiPost("/api/scan/os-fingerprint/", { ip })),
-    startArpSpoof:      (target_ip, gateway_ip) => call(() => apiPost("/api/attack/arp-spoof/", { target_ip, gateway_ip })),
-    startSynFlood:      (target_ip, target_port) => call(() => apiPost("/api/attack/syn-flood/", { target_ip, target_port })),
-    startIcmpRedirect:  (target_ip, spoofed_gateway, attacker_ip, destination_ip) =>
-      call(() => apiPost("/api/attack/icmp-redirect/", { target_ip, spoofed_gateway, attacker_ip, destination_ip })),
-    stopThread:         (thread_id)         => call(() => apiPost("/api/attack/stop/",          { thread_id })),
-    getThreads:         ()                  => call(() => apiGet("/api/threads/")),
-    getThreadStatus:    (thread_id)         => call(() => apiGet(`/api/threads/${thread_id}/`)),
-    getResults:         (session_id)        => call(() => apiGet(`/api/results/${session_id}/`)),
-    getPdfUrl:          (session_id)        => `${API_BASE}/api/report/${session_id}/pdf/`,
-  };
+    startHostDiscovery,
+    startPortScan,
+    startOsFingerprint,
+    startArpSpoof,
+    startSynFlood,
+    startIcmpRedirect,
+    stopThread,
+    getThreads,
+    getThreadStatus,
+    getResults,
+    getPdfUrl: (session_id) => `${API_BASE}/api/report/${session_id}/pdf/`,
+  }), [
+    loading,
+    error,
+    startHostDiscovery,
+    startPortScan,
+    startOsFingerprint,
+    startArpSpoof,
+    startSynFlood,
+    startIcmpRedirect,
+    stopThread,
+    getThreads,
+    getThreadStatus,
+    getResults,
+  ]);
 }

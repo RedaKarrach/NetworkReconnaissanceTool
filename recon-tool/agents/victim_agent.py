@@ -450,7 +450,7 @@ def main():
     if args.my_ip:
         MY_IP = args.my_ip
 
-    MY_IP = _detect_local_ip()
+    MY_IP = args.my_ip.strip() if args.my_ip else _detect_local_ip()
 
     if args.install_autostart and args.uninstall_autostart:
         print("[ERR] choose only one of --install-autostart or --uninstall-autostart")
