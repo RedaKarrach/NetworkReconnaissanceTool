@@ -95,9 +95,12 @@ function hasSynFlag(event) {
   return flags.includes("SYN") || flags.includes("S") || flags.includes("SYN-FLOOD");
 }
 
+const MAX_EVENT_BUFFER = 300;
+
 export function useWebSocket(sessionId) {
   const [packets, setPackets]         = useState([]);
   const [alerts, setAlerts]           = useState([]);
+  const [events, setEvents]           = useState([]);   // lifecycle/activity feed
   const [hosts, setHosts]             = useState([]);
   const [portResults, setPortResults] = useState([]);
   const [osResults, setOsResults]     = useState([]);
@@ -134,6 +137,7 @@ export function useWebSocket(sessionId) {
     setStatus("connecting");
     setPackets([]);
     setAlerts([]);
+    setEvents([]);
     setHosts([]);
     setPortResults([]);
     setOsResults([]);
@@ -191,6 +195,19 @@ export function useWebSocket(sessionId) {
           }
 
           setAlerts((prev) => [data, ...prev].slice(0, MAX_ALERT_BUFFER));
+          break;
+        case "ml_alert": {
+          // ML detections render in the Alerts feed with an "AI" badge.
+          const tagged = { ...data, source: "ml" };
+          const key = alertKey(tagged);
+          if (alertSeenRef.current.has(key)) break;
+          alertSeenRef.current.add(key);
+          setAlerts((prev) => [tagged, ...prev].slice(0, MAX_ALERT_BUFFER));
+          break;
+        }
+        case "event":
+          // Lifecycle/activity: scan started/complete, attack launched, agents.
+          setEvents((prev) => [data, ...prev].slice(0, MAX_EVENT_BUFFER));
           break;
         case "host_found":
           setHosts((prev) => upsertHostByIp(prev, data));
@@ -291,7 +308,7 @@ export function useWebSocket(sessionId) {
   }, []);
 
   return {
-    packets, alerts, hosts, portResults, osResults,
+    packets, alerts, events, hosts, portResults, osResults,
     status, sessionStatus, pps, synPps, send,
     // Convenience: combined raw event stream
     allEvents: packets,

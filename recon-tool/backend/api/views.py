@@ -4,6 +4,7 @@ api/views.py  (v2 — with detection + ICMP redirect endpoint)
 REST API views — each endpoint launches a background thread and returns
 a session/thread ID immediately so the frontend can subscribe via WebSocket.
 """
+import os
 import uuid
 import json
 import threading
@@ -132,14 +133,65 @@ def _check_packet_rate_limit(session_id):
     return count <= PACKET_RATE_LIMIT
 
 
+# Per-signature alert cooldown to suppress alert storms (seconds).
+ALERT_COOLDOWN_SECONDS = int(os.environ.get("ALERT_COOLDOWN_SECONDS", "10"))
+_alert_cooldown = {}            # signature -> last emit (monotonic seconds)
+_alert_cooldown_lock = threading.Lock()
+
+
+def _alert_signature(session, alert_dict):
+    return "|".join([
+        str(getattr(session, "session_id", "")),
+        str(alert_dict.get("type", "")),
+        str(alert_dict.get("src_ip", "")),
+        str(alert_dict.get("dst_ip", "")),
+        str(alert_dict.get("severity", "")),
+    ])
+
+
+def _emit_event(session, event_dict):
+    """Broadcast a lifecycle/activity event (event_type='event').
+
+    Activity events (scan started/complete, attack launched, agent up/down,
+    reachability advisories) are NOT written to the Alert collection, so the
+    alert feed stays limited to real security detections.
+    """
+    payload = {"event_type": "event", **event_dict}
+    try:
+        broadcast_event(session.session_id, payload)
+        if getattr(session, "session_id", None) != "live":
+            broadcast_event("live", payload)
+    except Exception:
+        pass
+
+
 def _emit_alert(session, alert_dict):
-    """Broadcast alert to session and live SOC stream, with trimming."""
+    """Persist a real security alert exactly once (+ live mirror) and broadcast.
+
+    A per-signature cooldown collapses repeated identical detections. Returns
+    the persisted session-level Alert (or None if suppressed / on error).
+    """
     alert_dict = detection.enrich_alert_with_mitre(alert_dict)
     now = datetime.utcnow()
 
+    # Cooldown de-dupe: drop the same (session,type,src,dst,severity) signature
+    # if it fired within the cooldown window.
+    signature = _alert_signature(session, alert_dict)
+    monotonic_now = time.monotonic()
+    with _alert_cooldown_lock:
+        last = _alert_cooldown.get(signature)
+        if last is not None and (monotonic_now - last) < ALERT_COOLDOWN_SECONDS:
+            return None
+        _alert_cooldown[signature] = monotonic_now
+        # Keep the cooldown map from growing without bound.
+        if len(_alert_cooldown) > 5000:
+            cutoff = monotonic_now - ALERT_COOLDOWN_SECONDS
+            for key in [k for k, v in _alert_cooldown.items() if v < cutoff]:
+                _alert_cooldown.pop(key, None)
+
     def _save_alert(session_obj):
         try:
-            Alert(
+            return Alert(
                 session=session_obj,
                 type=alert_dict.get("type"),
                 src_ip=alert_dict.get("src_ip"),
@@ -149,41 +201,44 @@ def _emit_alert(session, alert_dict):
                 timestamp=now,
             ).save()
         except Exception:
-            pass
+            return None
 
-    _save_alert(session)
-    if getattr(session, "session_id", None) != "live":
-        live_session = _get_live_session()
-        _save_alert(live_session)
-    payload = {
-        "event_type": "alert",
-        **alert_dict,
-    }
+    is_live = getattr(session, "session_id", None) == "live"
+    primary = _save_alert(session)
+    if not is_live:
+        _save_alert(_get_live_session())
+
+    # Single audit trail entry per emitted alert.
     try:
-        broadcast_alert(session.session_id, payload)
-        broadcast_alert("live", payload)
+        audit_log(
+            "alert_generated",
+            {
+                "alert_type": alert_dict.get("type"),
+                "src_ip": alert_dict.get("src_ip"),
+                "dst_ip": alert_dict.get("dst_ip"),
+                "severity": alert_dict.get("severity", "medium"),
+                "message": alert_dict.get("message"),
+            },
+            "success",
+            0,
+            metadata={"session_id": str(getattr(session, "session_id", ""))},
+        )
     except Exception:
         pass
-    # Also broadcast a packet-like event so alerts appear in the packet inspector
+
+    payload = {"event_type": "alert", **alert_dict}
     try:
-        pkt_like = {
-            "event_type": "packet",
-            "summary": alert_dict.get("message", ""),
-            "flags": alert_dict.get("type", "ALERT").upper(),
-            "ttl": 0,
-            "src_ip": alert_dict.get("src_ip") or alert_dict.get("agent") or "",
-            "dst_ip": alert_dict.get("dst_ip", ""),
-            "protocol": "ALERT",
-            "timestamp": alert_dict.get("timestamp") or datetime.utcnow().isoformat(),
-        }
-        broadcast_packet(session.session_id, pkt_like)
-        broadcast_packet("live", pkt_like)
+        broadcast_alert(session.session_id, payload)
+        if not is_live:
+            broadcast_alert("live", payload)
     except Exception:
         pass
 
     _trim_alert_logs(session)
-    if getattr(session, "session_id", None) != "live":
+    if not is_live:
         _trim_alert_logs(_get_live_session())
+
+    return primary
 
 
 class MitreMappingView(APIView):
@@ -365,7 +420,7 @@ def _validate_attack_ip(ip: str, field_name: str = "target_ip", require_live: bo
 def _broadcast_reachability_warning(session, action: str, ip: str):
     """Emit a low-severity advisory when a lab target does not answer reachability probes."""
     try:
-        _emit_alert(session, {
+        _emit_event(session, {
             "type": "target_unreachable",
             "src_ip": "scanner",
             "dst_ip": ip,
@@ -424,7 +479,7 @@ def _normalize_agent_inventory_state(agent_id: str, now: datetime = None):
     if previous_status != next_status:
         live_session = _get_live_session()
         if next_status == "online":
-            _emit_alert(live_session, {
+            _emit_event(live_session, {
                 "agent": agent_id,
                 "type": "agent_online",
                 "src_ip": registry.ip or "unknown",
@@ -434,7 +489,7 @@ def _normalize_agent_inventory_state(agent_id: str, now: datetime = None):
                 "timestamp": now.isoformat(),
             })
         else:
-            _emit_alert(live_session, {
+            _emit_event(live_session, {
                 "agent": agent_id,
                 "type": "agent_offline",
                 "src_ip": registry.ip or "unknown",
@@ -499,7 +554,7 @@ class HostDiscoveryView(APIView):
                 session.save()
                 broadcast_status(session_id, "complete",
                                  {"message": "Host discovery finished"})
-                _emit_alert(session, {
+                _emit_event(session, {
                     "type": "host_discovery_complete",
                     "src_ip": "scanner",
                     "dst_ip": subnet,
@@ -562,7 +617,7 @@ class HostDiscoveryView(APIView):
             metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
-        _emit_alert(session, {
+        _emit_event(session, {
             "type": "host_discovery_start",
             "src_ip": "scanner",
             "dst_ip": subnet,
@@ -636,7 +691,10 @@ class PortScanView(APIView):
                 }
                 broadcast_packet(session_id, packet)
                 broadcast_packet("live", packet)
-                detection.check_port_sweep(session, "scanner", res["port"], on_alert=lambda a: _emit_alert(session, a))
+                # NOTE: no sweep detection on the operator's own scan.
+                # Running check_port_sweep against our "scanner" source made the
+                # IDS alert on every legitimate scan. Sweep detection now runs
+                # only on observed/agent traffic (see InboundPacketView).
 
             def on_pkt(pkt_dict):
                 _log_packet(session, pkt_dict)
@@ -650,7 +708,7 @@ class PortScanView(APIView):
                 session.save()
                 broadcast_status(session_id, "complete",
                                  {"message": "Port scan finished"})
-                _emit_alert(session, {
+                _emit_event(session, {
                     "type": "port_scan_complete",
                     "src_ip": "scanner",
                     "dst_ip": ip,
@@ -722,7 +780,7 @@ class PortScanView(APIView):
             metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
-        _emit_alert(session, {
+        _emit_event(session, {
             "type": "port_scan_start",
             "src_ip": "scanner",
             "dst_ip": ip,
@@ -732,7 +790,7 @@ class PortScanView(APIView):
         })
 
         # Treat operator-launched endpoint scans as scan activity alerts
-        _emit_alert(session, {
+        _emit_event(session, {
             "type": "nmap_scan_detected",
             "src_ip": "scanner",
             "dst_ip": ip,
@@ -808,7 +866,7 @@ class OSFingerprintView(APIView):
                 session.save()
                 broadcast_status(session_id, "complete",
                                  {"message": "OS fingerprint complete"})
-                _emit_alert(session, {
+                _emit_event(session, {
                     "type": "os_fingerprint_complete",
                     "src_ip": "scanner",
                     "dst_ip": ip,
@@ -866,7 +924,7 @@ class OSFingerprintView(APIView):
             metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
-        _emit_alert(session, {
+        _emit_event(session, {
             "type": "os_fingerprint_start",
             "src_ip": "scanner",
             "dst_ip": ip,
@@ -962,7 +1020,7 @@ class ARPSpoofView(APIView):
             metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
-        _emit_alert(session, {
+        _emit_event(session, {
             "type": "arp_spoof",
             "src_ip": _request_client_ip(request) or "attacker",
             "dst_ip": target_ip,
@@ -1056,7 +1114,7 @@ class SYNFloodView(APIView):
             metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
-        _emit_alert(session, {
+        _emit_event(session, {
             "type": "syn_flood",
             "src_ip": _request_client_ip(request) or "attacker",
             "dst_ip": target_ip,
@@ -1173,8 +1231,8 @@ class ICMPRedirectView(APIView):
             metadata={"session_id": session_id, "thread_id": thread_id},
         )
 
-        _emit_alert(session, {
-            "type": "icmp_redirect",
+        _emit_event(session, {
+            "type": "icmp_redirect_launch",
             "src_ip": spoofed_gateway,
             "dst_ip": target_ip,
             "severity": "high",
@@ -1333,7 +1391,7 @@ class InventoryIngestView(APIView):
         broadcast_inventory(payload)
 
         if is_new_inventory:
-            _emit_alert(_get_live_session(), {
+            _emit_event(_get_live_session(), {
                 "agent": agent_id,
                 "type": "agent_online",
                 "src_ip": primary_ip or "unknown",
@@ -1749,33 +1807,27 @@ class InboundAlertView(APIView):
     def post(self, request):
         session = _get_live_session()
 
-        alert = Alert(
-            session  = session,
-            type     = request.data.get("type",     "unknown"),
-            src_ip   = request.data.get("src_ip",   ""),
-            dst_ip   = request.data.get("dst_ip",   ""),
-            severity = request.data.get("severity", "low"),
-            message  = request.data.get("message",  ""),
-        )
-        alert.save()
+        alert_type = request.data.get("type", "unknown")
+        src_ip = request.data.get("src_ip", "")
+        dst_ip = request.data.get("dst_ip", "")
+        severity = request.data.get("severity", "low")
+        message = request.data.get("message", "")
 
-        _emit_alert(session, {
-            "agent":      request.data.get("agent", "unknown"),
-            "type":       alert.type,
-            "src_ip":     alert.src_ip,
-            "dst_ip":     alert.dst_ip,
-            "severity":   alert.severity,
-            "message":    alert.message,
-            "timestamp":  alert.timestamp.isoformat(),
+        # _emit_alert is the single persistence point (save once + live mirror,
+        # audit, cooldown de-dupe). No separate Alert().save() here any more.
+        saved = _emit_alert(session, {
+            "agent":     request.data.get("agent", "unknown"),
+            "type":      alert_type,
+            "src_ip":    src_ip,
+            "dst_ip":    dst_ip,
+            "severity":  severity,
+            "message":   message,
+            "timestamp": datetime.utcnow().isoformat(),
         })
 
         try:
-            payload = {
-                "type": alert.type,
-                "message": alert.message,
-            }
-            if detection.is_auth_alert_payload(payload):
-                target_ip = alert.dst_ip or alert.src_ip
+            if detection.is_auth_alert_payload({"type": alert_type, "message": message}):
+                target_ip = dst_ip or src_ip
                 if target_ip:
                     detection.calculate_host_risk(target_ip)
         except Exception:
@@ -1784,7 +1836,7 @@ class InboundAlertView(APIView):
         return Response({
             "status":     "ok",
             "session_id": session.session_id,
-            "alert_id":   str(alert.id),
+            "alert_id":   str(saved.id) if saved else None,
         }, status=201)
 
 

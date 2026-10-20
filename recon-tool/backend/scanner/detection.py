@@ -19,7 +19,6 @@ from collections import defaultdict
 from mongoengine import Q
 
 from models import Alert, Host, PortResult, HostRiskScore
-from audit import audit_log
 
 
 # Per-session state stores (cleared on session end)
@@ -142,41 +141,20 @@ def enrich_alert_with_mitre(alert: dict):
     return alert
 
 
-def _save_alert(session, type_, src_ip, dst_ip, severity, message):
-    """Persist alert to MongoDB and return dict for WebSocket broadcast."""
-    a = Alert(
-        session   = session,
-        type      = type_,
-        src_ip    = src_ip,
-        dst_ip    = dst_ip,
-        severity  = severity,
-        message   = message,
-        timestamp = datetime.utcnow(),
-    )
-    a.save()
-    try:
-        audit_log(
-            "alert_generated",
-            {
-                "alert_type": type_,
-                "src_ip": src_ip,
-                "dst_ip": dst_ip,
-                "severity": severity,
-                "message": message,
-            },
-            "success",
-            0,
-            metadata={"session_id": str(session.session_id)},
-        )
-    except Exception:
-        pass
+def _build_alert(type_, src_ip, dst_ip, severity, message):
+    """Build an alert dict for the on_alert callback.
+
+    Persistence, audit logging and de-dupe are the single responsibility of the
+    emitter (api.views._emit_alert). The detection engine only *describes* what
+    it saw; it never writes to MongoDB. This removes the old double/triple save.
+    """
     return {
         "type":      type_,
         "src_ip":    src_ip,
         "dst_ip":    dst_ip,
         "severity":  severity,
         "message":   message,
-        "timestamp": a.timestamp.isoformat(),
+        "timestamp": datetime.utcnow().isoformat(),
     }
 
 
@@ -290,8 +268,8 @@ def check_arp(session, ip: str, mac: str, on_alert=None):
             _arp_cache[sid][ip] = mac
             return
         if known_mac != mac:
-            alert = _save_alert(
-                session, "arp_anomaly",
+            alert = _build_alert(
+                "arp_anomaly",
                 src_ip   = mac,
                 dst_ip   = ip,
                 severity = "high",
@@ -329,8 +307,8 @@ def check_port_sweep(session, src_ip: str, dst_port: int, on_alert=None):
 
         unique_ports = len({p for _, p in hits})
         if unique_ports >= PORT_SWEEP_THRESHOLD:
-            alert = _save_alert(
-                session, "port_sweep",
+            alert = _build_alert(
+                "port_sweep",
                 src_ip   = src_ip,
                 dst_ip   = "multiple",
                 severity = "medium",
@@ -367,8 +345,8 @@ def check_syn_flood(session, dst_ip: str, dst_port: int, on_alert=None):
         hits.append(now)
 
         if len(hits) >= SYN_FLOOD_THRESHOLD:
-            alert = _save_alert(
-                session, "flood_detected",
+            alert = _build_alert(
+                "flood_detected",
                 src_ip   = "multiple (spoofed)",
                 dst_ip   = dst_ip,
                 severity = "critical",
