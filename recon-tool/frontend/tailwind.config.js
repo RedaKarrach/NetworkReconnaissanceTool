@@ -72,8 +72,14 @@ module.exports = {
         "border-premium": token("--color-border-premium-rgb"),
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "Fira Code", "monospace"],
+        sans: [
+          "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Noto Sans",
+          "Helvetica", "Arial", "sans-serif",
+        ],
+        mono: [
+          "ui-monospace", "SFMono-Regular", "SF Mono", "Menlo", "Consolas",
+          "Liberation Mono", "Courier New", "monospace",
+        ],
       },
       fontSize: {
         xs: ["11px", { lineHeight: "16px" }],
