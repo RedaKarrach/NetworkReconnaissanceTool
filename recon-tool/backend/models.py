@@ -130,6 +130,7 @@ class AuditLog(Document):
             "fingerprint_run",
             "attack_initiated",
             "alert_generated",
+            "mitigation_recorded",
         ),
     )
     action_detail = StringField(default="{}")
@@ -173,6 +174,34 @@ class HostInventory(Document):
     meta = {
         "collection": "host_inventory",
         "indexes": ["agent_id", "hostname", "last_seen"],
+    }
+
+
+class MitigationAction(Document):
+    """IPS/response record created when a confirmed detection fires.
+
+    Enforcement is gated by the IPS_ENFORCE env flag. With it off (the default)
+    actions are recorded as "would_block" recommendations only — nothing on the
+    network is touched. Real enforcement is lab-only (see docs).
+    """
+    session            = ReferenceField(ScanSession)
+    alert_type         = StringField()
+    src_ip             = StringField()        # the host the action targets
+    dst_ip             = StringField()
+    severity           = StringField(default="medium")
+    action             = StringField(default="monitor")   # block_src_ip | quarantine_host | monitor
+    mode               = StringField(default="recommended")  # recommended | enforced
+    status             = StringField(default="would_block")  # would_block | enforced | failed
+    reason             = StringField()
+    mitre_tactic       = StringField()
+    mitre_tactic_id    = StringField()
+    mitre_technique    = StringField()
+    mitre_technique_id = StringField()
+    created_at         = DateTimeField(default=datetime.utcnow)
+
+    meta = {
+        "collection": "mitigation_actions",
+        "indexes": ["session", "src_ip", "alert_type", "status", "created_at"],
     }
 
 

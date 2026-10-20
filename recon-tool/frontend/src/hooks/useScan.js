@@ -5,12 +5,18 @@
  * Returns action functions and loading/error state.
  */
 import { useState, useCallback, useMemo } from "react";
-import { API_BASE } from "../lib/runtimeConfig";
+import { API_BASE, API_TOKEN } from "../lib/runtimeConfig";
+
+function authHeaders(base = {}) {
+  // Operator token for scan/attack endpoints (ignored by the backend when
+  // API_AUTH_TOKEN is unset — the documented dev bypass).
+  return API_TOKEN ? { ...base, "X-API-TOKEN": API_TOKEN } : base;
+}
 
 async function apiPost(path, body) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -21,7 +27,7 @@ async function apiPost(path, body) {
 }
 
 async function apiGet(path) {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }

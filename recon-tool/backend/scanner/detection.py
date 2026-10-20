@@ -287,8 +287,8 @@ def check_arp(session, ip: str, mac: str, on_alert=None):
 # Port sweep detection
 # ─────────────────────────────────────────────────────────────────────────────
 
-PORT_SWEEP_THRESHOLD = 3     # distinct ports in 10 seconds
-PORT_SWEEP_WINDOW    = 10    # seconds
+PORT_SWEEP_THRESHOLD = int(os.environ.get("IDS_SWEEP_THRESHOLD", "10"))   # distinct ports
+PORT_SWEEP_WINDOW    = int(os.environ.get("IDS_SWEEP_WINDOW", "10"))      # seconds
 
 def check_port_sweep(session, src_ip: str, dst_port: int, on_alert=None):
     """
@@ -326,8 +326,8 @@ def check_port_sweep(session, src_ip: str, dst_port: int, on_alert=None):
 # SYN flood signal detection
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYN_FLOOD_THRESHOLD = 200   # SYNs to same port in 10s
-SYN_FLOOD_WINDOW    = 10    # seconds
+SYN_FLOOD_THRESHOLD = int(os.environ.get("IDS_SYN_THRESHOLD", "200"))   # SYNs to same port
+SYN_FLOOD_WINDOW    = int(os.environ.get("IDS_SYN_WINDOW", "10"))       # seconds
 
 def check_syn_flood(session, dst_ip: str, dst_port: int, on_alert=None):
     """
@@ -358,6 +358,49 @@ def check_syn_flood(session, dst_ip: str, dst_port: int, on_alert=None):
             hits.clear()
             if on_alert:
                 on_alert(alert)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified packet engine
+# ─────────────────────────────────────────────────────────────────────────────
+
+def process_packet(session, pkt: dict, on_alert=None):
+    """Single entry point for passive detection on an observed packet.
+
+    Parses one packet summary and dispatches to the ARP / SYN-flood / port-sweep
+    / ICMP-redirect checks. This replaces the detection logic that used to be
+    inlined in api.views.InboundPacketView, so there is now exactly one engine.
+    """
+    proto = str(pkt.get("protocol", "")).upper()
+    flags = str(pkt.get("flags", "")).upper()
+    summary = str(pkt.get("summary", ""))
+    src_ip = pkt.get("src_ip", "")
+    dst_ip = pkt.get("dst_ip", "")
+
+    if proto == "ARP" and "is at" in summary.lower() and src_ip:
+        mac_match = re.search(r"is\s+at\s+([0-9a-fA-F:]{11,17})", summary)
+        if mac_match:
+            check_arp(session, ip=src_ip, mac=mac_match.group(1), on_alert=on_alert)
+
+    if proto == "TCP" and flags in {"S", "SYN"}:
+        port_match = re.search(r":(\d{1,5})(?:\D|$)", summary)
+        if not port_match:
+            port_match = re.search(r"port\s+(\d{1,5})(?:\D|$)", summary, re.IGNORECASE)
+        dst_port = int(port_match.group(1)) if port_match else 0
+        if 0 < dst_port <= 65535:
+            check_syn_flood(session, dst_ip=dst_ip or "unknown", dst_port=dst_port, on_alert=on_alert)
+            check_port_sweep(session, src_ip=src_ip or "unknown", dst_port=dst_port, on_alert=on_alert)
+
+    if proto == "ICMP" and ("REDIRECT" in flags or "type=5" in summary.lower()):
+        alert = _build_alert(
+            "icmp_redirect",
+            src_ip=src_ip or "unknown",
+            dst_ip=dst_ip or "unknown",
+            severity="high",
+            message=f"ICMP redirect detected from {src_ip} to {dst_ip}",
+        )
+        if on_alert:
+            on_alert(alert)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

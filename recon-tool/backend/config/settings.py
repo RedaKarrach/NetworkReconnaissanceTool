@@ -11,6 +11,15 @@ DEBUG      = os.environ.get("DEBUG", "True") == "True"
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 SCAN_ALLOWED_SUBNET = os.environ.get("SCAN_ALLOWED_SUBNET", "192.168.56.0/24")
 
+# Operator token for scan/attack endpoints and the WebSocket.
+# Leave empty to disable auth (documented dev bypass for the local lab).
+API_AUTH_TOKEN = os.environ.get("API_AUTH_TOKEN", "")
+
+# IPS response layer. Off by default: confirmed detections are recorded as
+# "would_block" recommendations only; nothing on the network is touched.
+# Real enforcement is lab-only — see docs/ARCHITECTURE.md.
+IPS_ENFORCE = os.environ.get("IPS_ENFORCE", "false").strip().lower() in {"1", "true", "yes"}
+
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [

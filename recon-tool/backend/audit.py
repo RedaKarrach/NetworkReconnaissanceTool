@@ -12,6 +12,7 @@ ALLOWED_ACTIONS = {
     "fingerprint_run",
     "attack_initiated",
     "alert_generated",
+    "mitigation_recorded",
 }
 
 ALLOWED_STATUS = {"success", "failure"}

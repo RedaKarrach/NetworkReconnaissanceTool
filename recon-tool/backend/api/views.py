@@ -20,13 +20,17 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.conf import settings
 
-from models import ScanSession, Host, PortResult, Alert, PacketLog, AttackLog, HostInventory, AgentRegistry, AuditLog
+from models import (
+    ScanSession, Host, PortResult, Alert, PacketLog, AttackLog,
+    HostInventory, AgentRegistry, AuditLog, MitigationAction,
+)
 from threads.manager import start_thread, stop_thread, get_status, list_threads, cleanup_dead_threads
 from websockets.consumers import (
     broadcast_packet, broadcast_alert, broadcast_status, broadcast_inventory,
-    broadcast_event, broadcast_ml_alert,
+    broadcast_event, broadcast_ml_alert, broadcast_mitigation,
 )
 from audit import audit_log
+from api.permissions import OperatorTokenPermission
 
 # Import scanner modules
 from scanner.discovery   import arp_sweep
@@ -238,7 +242,117 @@ def _emit_alert(session, alert_dict):
     if not is_live:
         _trim_alert_logs(_get_live_session())
 
+    # IPS/response layer: record a recommended (or enforced) action.
+    try:
+        _apply_mitigation(session, alert_dict)
+    except Exception:
+        pass
+
     return primary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IPS / response layer
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Confirmed detection type → recommended response action.
+_IPS_ACTION_MAP = {
+    "flood_detected":     "block_src_ip",
+    "syn_flood":          "block_src_ip",
+    "arp_anomaly":        "quarantine_host",
+    "port_sweep":         "block_src_ip",
+    "icmp_redirect":      "block_src_ip",
+    "auth_failed":        "block_src_ip",
+    "bruteforce_login":   "block_src_ip",
+    "ssh_bruteforce":     "block_src_ip",
+    "rdp_bruteforce":     "block_src_ip",
+}
+
+
+def _looks_like_ip(value) -> bool:
+    try:
+        ipaddress.ip_address(str(value))
+        return True
+    except Exception:
+        return False
+
+
+def _apply_mitigation(session, alert_dict):
+    """Record an IPS response for a confirmed detection.
+
+    IPS_ENFORCE is OFF by default → actions are "would_block" recommendations
+    only; nothing on the network is touched. Even with IPS_ENFORCE on, real
+    packet-dropping (iptables / host quarantine) is a documented lab-only
+    integration point and is deliberately NOT executed here; we record the
+    intended action and surface it to the UI and audit log.
+    """
+    alert_type = str(alert_dict.get("type", ""))
+    action = _IPS_ACTION_MAP.get(alert_type)
+    if not action and detection.is_auth_alert_payload(alert_dict):
+        action = "block_src_ip"
+    if not action:
+        return
+
+    src = alert_dict.get("src_ip", "")
+    dst = alert_dict.get("dst_ip", "")
+    # Target the concrete attacker IP; ARP/flood "src" is a MAC or spoofed, so
+    # fall back to the affected host.
+    target = src if _looks_like_ip(src) else (dst if _looks_like_ip(dst) else (src or dst))
+
+    enforce = bool(getattr(settings, "IPS_ENFORCE", False))
+    mode = "enforced" if enforce else "recommended"
+    status = "enforced" if enforce else "would_block"
+    severity = alert_dict.get("severity", "medium")
+    reason = f"auto-response to {alert_type} ({severity})"
+
+    record_session = session if getattr(session, "session_id", None) != "live" else _get_live_session()
+    rec = MitigationAction(
+        session=record_session,
+        alert_type=alert_type,
+        src_ip=target,
+        dst_ip=dst,
+        severity=severity,
+        action=action,
+        mode=mode,
+        status=status,
+        reason=reason,
+        mitre_tactic=alert_dict.get("mitre_tactic", ""),
+        mitre_tactic_id=alert_dict.get("mitre_tactic_id", ""),
+        mitre_technique=alert_dict.get("mitre_technique", ""),
+        mitre_technique_id=alert_dict.get("mitre_technique_id", ""),
+    ).save()
+
+    try:
+        audit_log(
+            "mitigation_recorded",
+            {"alert_type": alert_type, "action": action, "target": target,
+             "mode": mode, "status": status},
+            "success",
+            0,
+            metadata={"session_id": str(getattr(session, "session_id", ""))},
+        )
+    except Exception:
+        pass
+
+    payload = {
+        "type": alert_type,
+        "src_ip": target,
+        "dst_ip": dst,
+        "severity": severity,
+        "action": action,
+        "mode": mode,
+        "status": status,
+        "reason": reason,
+        "mitre_technique": alert_dict.get("mitre_technique", ""),
+        "mitre_technique_id": alert_dict.get("mitre_technique_id", ""),
+        "created_at": rec.created_at.isoformat(),
+    }
+    try:
+        broadcast_mitigation(session.session_id, payload)
+        if getattr(session, "session_id", None) != "live":
+            broadcast_mitigation("live", payload)
+    except Exception:
+        pass
 
 
 class MitreMappingView(APIView):
@@ -518,6 +632,7 @@ def _normalize_agent_inventory_state(agent_id: str, now: datetime = None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class HostDiscoveryView(APIView):
+    permission_classes = [OperatorTokenPermission]
     """POST /api/scan/host-discovery/  { "subnet": "192.168.56.0/24" }"""
 
     def post(self, request):
@@ -639,6 +754,7 @@ class HostDiscoveryView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PortScanView(APIView):
+    permission_classes = [OperatorTokenPermission]
     """POST /api/scan/port-scan/  { "ip": "...", "ports": [22,80,443], "protocol": "tcp" }"""
 
     def post(self, request):
@@ -814,6 +930,7 @@ class PortScanView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class OSFingerprintView(APIView):
+    permission_classes = [OperatorTokenPermission]
     """POST /api/scan/os-fingerprint/  { "ip": "..." }"""
 
     def post(self, request):
@@ -946,6 +1063,7 @@ class OSFingerprintView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ARPSpoofView(APIView):
+    permission_classes = [OperatorTokenPermission]
     """POST /api/attack/arp-spoof/  { "target_ip": "...", "gateway_ip": "..." }"""
 
     def post(self, request):
@@ -1043,6 +1161,7 @@ class ARPSpoofView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SYNFloodView(APIView):
+    permission_classes = [OperatorTokenPermission]
     """POST /api/attack/syn-flood/  { "target_ip": "...", "target_port": 80 }"""
 
     def post(self, request):
@@ -1133,6 +1252,7 @@ class SYNFloodView(APIView):
 
 
 class ICMPRedirectView(APIView):
+    permission_classes = [OperatorTokenPermission]
     """POST /api/attack/icmp-redirect/  { target_ip, spoofed_gateway, attacker_ip, destination_ip }"""
 
     def post(self, request):
@@ -1256,6 +1376,7 @@ class ICMPRedirectView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StopThreadView(APIView):
+    permission_classes = [OperatorTokenPermission]
     """POST /api/attack/stop/  { "thread_id": "..." }"""
 
     def post(self, request):
@@ -1875,53 +1996,67 @@ class InboundPacketView(APIView):
         ).save()
         _trim_packet_logs(session)
 
-        # Passive detections from VM-reported packet stream.
-        proto = str(pkt.get("protocol", "")).upper()
-        flags = str(pkt.get("flags", "")).upper()
-        summary = str(pkt.get("summary", ""))
-        src_ip = pkt.get("src_ip", "")
-        dst_ip = pkt.get("dst_ip", "")
-
-        if proto == "ARP" and "is at" in summary.lower() and src_ip:
-            # Summary format: "ARP reply: <ip> is at <mac>"
-            mac_match = re.search(r"is\s+at\s+([0-9a-fA-F:]{11,17})", summary)
-            if mac_match:
-                detection.check_arp(
-                    session,
-                    ip=src_ip,
-                    mac=mac_match.group(1),
-                    on_alert=lambda a: _emit_alert(session, a),
-                )
-
-        if proto == "TCP" and flags in {"S", "SYN"}:
-            port_match = re.search(r":(\d{1,5})(?:\D|$)", summary)
-            if not port_match:
-                port_match = re.search(r"port\s+(\d{1,5})(?:\D|$)", summary, flags=re.IGNORECASE)
-            dst_port = int(port_match.group(1)) if port_match else 0
-            if 0 < dst_port <= 65535:
-                detection.check_syn_flood(
-                    session,
-                    dst_ip=dst_ip or "unknown",
-                    dst_port=dst_port,
-                    on_alert=lambda a: _emit_alert(session, a),
-                )
-                detection.check_port_sweep(
-                    session,
-                    src_ip=src_ip or "unknown",
-                    dst_port=dst_port,
-                    on_alert=lambda a: _emit_alert(session, a),
-                )
-
-        if proto == "ICMP" and ("REDIRECT" in flags or "type=5" in summary.lower()):
-            _emit_alert(session, {
-                "type": "icmp_redirect",
-                "src_ip": src_ip or "unknown",
-                "dst_ip": dst_ip or "unknown",
-                "severity": "high",
-                "message": f"ICMP redirect detected from {src_ip} to {dst_ip}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        # Passive detection on the VM-reported packet stream — one engine.
+        detection.process_packet(session, pkt, on_alert=lambda a: _emit_alert(session, a))
 
         broadcast_packet("live", pkt)
 
         return Response({"status": "ok"}, status=201)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. IPS / mitigation actions
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MitigationsView(APIView):
+    """GET /api/mitigations/?limit=100&status=would_block&src_ip=...&hours=24"""
+
+    def get(self, request):
+        try:
+            limit = max(1, min(500, int(request.query_params.get("limit", 100))))
+        except (TypeError, ValueError):
+            limit = 100
+
+        qs = MitigationAction.objects
+        status_filter = request.query_params.get("status")
+        src_ip = request.query_params.get("src_ip")
+        alert_type = request.query_params.get("alert_type")
+        if status_filter:
+            qs = qs(status=status_filter)
+        if src_ip:
+            qs = qs(src_ip=src_ip)
+        if alert_type:
+            qs = qs(alert_type=alert_type)
+
+        try:
+            hours = int(request.query_params.get("hours", 0))
+        except (TypeError, ValueError):
+            hours = 0
+        if hours > 0:
+            qs = qs(created_at__gte=datetime.utcnow() - timedelta(hours=hours))
+
+        total = qs.count()
+        items = []
+        for m in qs.order_by("-created_at").limit(limit):
+            items.append({
+                "id": str(m.id),
+                "alert_type": m.alert_type,
+                "src_ip": m.src_ip,
+                "dst_ip": m.dst_ip,
+                "severity": m.severity,
+                "action": m.action,
+                "mode": m.mode,
+                "status": m.status,
+                "reason": m.reason,
+                "mitre_tactic": m.mitre_tactic,
+                "mitre_tactic_id": m.mitre_tactic_id,
+                "mitre_technique": m.mitre_technique,
+                "mitre_technique_id": m.mitre_technique_id,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            })
+
+        return Response({
+            "count": total,
+            "enforce": bool(getattr(settings, "IPS_ENFORCE", False)),
+            "items": items,
+        }, status=200)

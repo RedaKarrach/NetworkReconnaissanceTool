@@ -13,10 +13,12 @@ Daphne event loop).
 """
 import json
 import asyncio
+from urllib.parse import parse_qs
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from django.conf import settings
 
 # Server → client heartbeat interval (seconds). Keeps idle connections alive
 # through proxies and lets the client notice a dead socket quickly.
@@ -35,6 +37,17 @@ class ScanConsumer(AsyncWebsocketConsumer):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
         self.group_name = f"scan_{self.session_id}"
         self._heartbeat_task = None
+
+        # Operator-token auth (dev bypass when API_AUTH_TOKEN is empty). The
+        # browser WebSocket API cannot set headers, so the token arrives as a
+        # ?token= query parameter.
+        expected = getattr(settings, "API_AUTH_TOKEN", "")
+        if expected:
+            qs = parse_qs((self.scope.get("query_string") or b"").decode("utf-8"))
+            provided = (qs.get("token", [""])[0] or "").strip()
+            if provided != expected:
+                await self.close(code=4401)
+                return
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -170,3 +183,9 @@ def broadcast_inventory(inventory_data: dict):
     """Broadcast host inventory updates on the shared inventory stream."""
     payload = {"event_type": "inventory", **(inventory_data or {})}
     _group_send("scan_inventory", "packet.event", payload)
+
+
+def broadcast_mitigation(session_id: str, data: dict):
+    """Broadcast an IPS/response action to a session's clients."""
+    payload = _sanitize(data, "mitigation")
+    _group_send(f"scan_{session_id}", "stream.event", payload)
