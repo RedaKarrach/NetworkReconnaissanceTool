@@ -177,6 +177,58 @@
       "tactic_id": "TA0040",
       "technique": "Data Encrypted for Impact",
       "technique_id": "T1486"
+    },
+    {
+      "name": "Scanning & Sweeps",
+      "pattern_type": "regex",
+      "patterns": [
+        "stealth_scan", "stealth scan", "null scan", "fin scan", "xmas scan",
+        "host_sweep", "host sweep", "ping_sweep", "ping sweep", "scan flags"
+      ],
+      "tactic": "Discovery",
+      "tactic_id": "TA0007",
+      "technique": "Network Service Discovery",
+      "technique_id": "T1046"
+    },
+    {
+      "name": "Network Denial of Service",
+      "pattern_type": "regex",
+      "patterns": [
+        "icmp_flood", "icmp flood", "udp_flood", "udp flood",
+        "rst_flood", "rst flood", "connection_flood", "connection flood",
+        "flood_detected", "packet rate"
+      ],
+      "tactic": "Impact",
+      "tactic_id": "TA0040",
+      "technique": "Network Denial of Service",
+      "technique_id": "T1498"
+    },
+    {
+      "name": "Endpoint Denial of Service (LAND)",
+      "pattern_type": "regex",
+      "patterns": ["land_attack", "land attack", "identical src and dst"],
+      "tactic": "Impact",
+      "tactic_id": "TA0040",
+      "technique": "Endpoint Denial of Service",
+      "technique_id": "T1499"
+    },
+    {
+      "name": "DNS Tunneling / Exfiltration",
+      "pattern_type": "regex",
+      "patterns": ["dns_anomaly", "dns anomaly", "excessive dns", "tunneling", "exfil"],
+      "tactic": "Exfiltration",
+      "tactic_id": "TA0010",
+      "technique": "Exfiltration Over Alternative Protocol",
+      "technique_id": "T1048"
+    },
+    {
+      "name": "Sensitive Service Access",
+      "pattern_type": "regex",
+      "patterns": ["suspicious_port_access", "sensitive service", "sensitive port"],
+      "tactic": "Lateral Movement",
+      "tactic_id": "TA0008",
+      "technique": "Remote Services",
+      "technique_id": "T1021"
     }
   ]
 }

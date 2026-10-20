@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Dashboard from "./pages/Dashboard";
-import SOCDashboard from "./pages/SOCDashboard";
+import RempartDashboard from "./pages/RempartDashboard";
 import Endpoints from "./pages/Endpoints";
 import Inventory from "./pages/Inventory";
 import AttackConsole from "./components/AttackConsole";
@@ -251,7 +251,7 @@ export default function App() {
 
   function renderPage() {
     if (currentPage === "soc") {
-      return <SOCDashboard />;
+      return <RempartDashboard />;
     }
     if (currentPage === "dashboard") {
       return <Dashboard onSessionStart={setActiveSession} />;
@@ -268,7 +268,7 @@ export default function App() {
     if (currentPage === "inventory") {
       return <Inventory />;
     }
-    return <SOCDashboard />;
+    return <RempartDashboard />;
   }
 
   if (!isAuthenticated) {
@@ -276,96 +276,56 @@ export default function App() {
   }
 
   return (
-    <div className="scene-3d flex h-screen overflow-hidden bg-bg-app text-text-primary">
-      {/* Atmospheric background */}
-      <div className="pointer-events-none fixed inset-0">
-        <div className="holo-ring holo-ring-primary" />
-        <div className="holo-ring holo-ring-secondary" />
-        <div className="absolute inset-0 opacity-[0.02]"
-          style={{
-            backgroundImage:
-              "repeating-linear-gradient(0deg, rgba(0,212,255,0.1) 0px, rgba(0,212,255,0.1) 1px, transparent 1px, transparent 32px), repeating-linear-gradient(90deg, rgba(0,212,255,0.1) 0px, rgba(0,212,255,0.1) 1px, transparent 1px, transparent 32px)",
-          }}
-        />
-        <div className="absolute -bottom-20 -left-20 h-[300px] w-[300px] rounded-full bg-accent-primary blur-3xl opacity-[0.03] depth-float" />
-        <div className="absolute top-[10%] right-[12%] h-40 w-40 rounded-2xl border border-accent-primary/20 bg-accent-primary/5 blur-sm"
-          style={{
-            transform: "rotateX(58deg) rotateZ(34deg) translateZ(-60px)",
-          }}
-        />
-      </div>
-
+    <div className="flex h-screen overflow-hidden bg-bg-app text-text-primary">
       {/* Sidebar */}
-      <aside className="relative flex h-full flex-col border-r border-border-premium bg-gradient-to-b from-bg-sidebar to-bg-card/40 transition-all duration-200 tilt-3d-soft"
-        style={{
-          width: isSidebarCollapsed ? "60px" : "260px",
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
-          boxShadow: "inset -1px 0 0 rgba(0,212,255,0.08)",
-        }}
+      <aside className="relative flex h-full flex-col border-r border-border-default bg-bg-sidebar transition-[width] duration-150"
+        style={{ width: isSidebarCollapsed ? "60px" : "240px" }}
       >
         {/* Brand */}
-        <div className="border-b border-border-premium/60 px-3 py-5 transition-all duration-300">
+        <div className="border-b border-border-default px-3 py-4">
           <div className="flex items-center gap-3">
-            <div className="relative flex h-10 w-10 items-center justify-center">
-              <div className="absolute inset-0 rounded-lg bg-accent-primary/20 blur opacity-0 group-hover/brand:opacity-100 transition-opacity duration-300" />
-              <div className="relative flex h-10 w-10 items-center justify-center rounded-lg border border-border-accent bg-gradient-to-br from-accent-primary/30 to-accent-primary/10 text-accent-primary shadow-card">
-                <ShieldIcon className="h-5 w-5" />
-              </div>
+            <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border-default bg-bg-elevated text-accent-primary">
+              <ShieldIcon className="h-5 w-5" />
             </div>
             {!isSidebarCollapsed && (
-              <div className="min-w-0 transition-all duration-300">
-                <p className="truncate text-lg font-bold text-gradient">ReconTool</p>
-                <p className="truncate text-xs font-medium text-text-tertiary">Security Ops</p>
+              <div className="min-w-0">
+                <p className="truncate text-md font-semibold text-text-primary">Rempart <span style={{ color: "#2dd4bf" }}>SIEM</span></p>
+                <p className="truncate text-xs font-medium text-text-tertiary">Network SOC</p>
               </div>
             )}
           </div>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto px-2 py-4 space-y-6">
+        <nav className="flex-1 overflow-y-auto px-2 py-4 space-y-5">
           {NAV_SECTIONS.map((section) => (
-            <div key={section.label} className="transition-all duration-300">
+            <div key={section.label}>
               {!isSidebarCollapsed && (
-                <p className="px-3 pb-3 text-xs font-bold tracking-wider text-accent-primary opacity-60 uppercase">{section.label}</p>
+                <p className="px-3 pb-2 text-xs font-semibold tracking-wide text-text-tertiary uppercase">{section.label}</p>
               )}
-              <div className="space-y-1.5">
-                {section.items.map((item, idx) => {
+              <div className="space-y-0.5">
+                {section.items.map((item) => {
                   const active = isNavActive(item.id, item.page);
                   return (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => handleNavSelect(item.id, item.page)}
-                      className={`group relative flex w-full items-center rounded-lg px-3 py-2.5 text-left transition-all duration-200 stagger-item`}
-                      style={{ animationDelay: `${idx * 30}ms` }}
+                      className={`group relative flex w-full items-center rounded-md px-3 py-2 text-left transition-colors duration-150 ${
+                        active
+                          ? "bg-accent-muted border border-accent-border"
+                          : "border border-transparent hover:bg-bg-card-hover"
+                      }`}
                     >
-                      {/* Active background */}
-                      {active && (
-                        <div className="absolute inset-0 rounded-lg bg-accent-primary/15 border border-accent-primary/40"
-                          style={{
-                            boxShadow: "inset 0 0 12px rgba(0,212,255,0.1)",
-                          }}
-                        />
-                      )}
-
-                      {/* Hover glow */}
-                      <div className="absolute inset-0 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-white/[0.06] border border-white/[0.08]" />
-
-                      <item.Icon className={`relative h-4 w-4 flex-shrink-0 transition-all duration-200 ${
-                        active ? "text-accent-primary" : "text-text-secondary group-hover:text-accent-primary"
+                      <item.Icon className={`h-4 w-4 flex-shrink-0 ${
+                        active ? "text-accent-primary" : "text-text-tertiary group-hover:text-text-secondary"
                       }`} />
-
                       {!isSidebarCollapsed && (
-                        <span className={`relative ml-3 truncate text-sm font-medium transition-colors duration-200 ${
-                          active ? "text-accent-primary font-semibold" : "text-text-secondary group-hover:text-text-primary"
+                        <span className={`ml-3 truncate text-sm ${
+                          active ? "text-text-primary font-semibold" : "text-text-secondary group-hover:text-text-primary"
                         }`}>
                           {item.title}
                         </span>
-                      )}
-
-                      {active && !isSidebarCollapsed && (
-                        <div className="absolute right-2 h-1.5 w-1.5 rounded-full bg-accent-primary animate-pulse" />
                       )}
                     </button>
                   );
@@ -376,11 +336,11 @@ export default function App() {
         </nav>
 
         {/* Collapse button */}
-        <div className="border-t border-border-premium/60 px-2 py-3">
+        <div className="border-t border-border-default px-2 py-3">
           <button
             type="button"
             onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-            className="group flex w-full items-center rounded-lg border border-border-default/40 bg-white/[0.05] px-3 py-2.5 text-text-tertiary transition-all duration-200 hover:bg-white/[0.08] hover:text-text-secondary hover:border-border-elevated/60"
+            className="flex w-full items-center rounded-md border border-border-default px-3 py-2 text-text-tertiary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-secondary"
           >
             <ChevronIcon collapsed={isSidebarCollapsed} />
             {!isSidebarCollapsed && <span className="ml-3 text-sm font-medium">Collapse</span>}
@@ -388,31 +348,24 @@ export default function App() {
         </div>
 
         {/* Agents section */}
-        <div className="border-t border-border-premium/60 px-3 py-4">
-          {!isSidebarCollapsed && <p className="mb-3 text-xs font-bold tracking-wider text-accent-primary/60 uppercase">Live Agents</p>}
-          <div className="space-y-2">
+        <div className="border-t border-border-default px-3 py-4">
+          {!isSidebarCollapsed && <p className="mb-2 text-xs font-semibold tracking-wide text-text-tertiary uppercase">Live Agents</p>}
+          <div className="space-y-1">
             {sidebarAgents.length === 0 ? (
               <div className={`flex items-center text-text-tertiary ${isSidebarCollapsed ? "justify-center py-2" : "gap-2"}`}>
-                <span className="h-2 w-2 rounded-full bg-status-offline/60" />
+                <span className="h-2 w-2 rounded-full bg-status-offline" />
                 {!isSidebarCollapsed && <p className="text-xs">No agents</p>}
               </div>
             ) : (
-              sidebarAgents.map((agent, idx) => (
+              sidebarAgents.map((agent) => (
                 <div key={agent.id}
-                  className="group/agent rounded-lg border border-transparent p-2 transition-all duration-200 hover:border-border-elevated/40 hover:bg-white/[0.05]"
-                  style={{
-                    animationDelay: `${idx * 40}ms`,
-                  }}
+                  className="group/agent rounded-md border border-transparent p-2 transition-colors duration-150 hover:border-border-default hover:bg-bg-card-hover"
                 >
                   <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-2"}`}>
-                    <span className={`relative h-2.5 w-2.5 rounded-full transition-all duration-200 ${
-                      agent.online
-                        ? "bg-status-online shadow-lg shadow-status-online/50"
-                        : "bg-status-offline/50"
-                    }`} />
+                    <span className={`h-2 w-2 rounded-full ${agent.online ? "bg-status-online" : "bg-status-offline"}`} />
                     {!isSidebarCollapsed && (
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-text-primary group-hover/agent:text-accent-primary transition-colors duration-200">{agent.name}</p>
+                        <p className="truncate text-sm font-medium text-text-primary">{agent.name}</p>
                         <p className="truncate font-mono text-xs text-text-tertiary">{agent.ip}</p>
                       </div>
                     )}
@@ -424,40 +377,28 @@ export default function App() {
         </div>
 
         {/* Footer */}
-        <div className="border-t border-border-premium/60 px-3 py-3 text-center" />
+        <div className="border-t border-border-default px-3 py-3 text-center" />
       </aside>
 
       {/* Main content */}
-      <div className="relative flex min-w-0 flex-1 flex-col scene-3d">
-        {/* Header */}
-        <header className="relative border-b border-border-premium/40 bg-gradient-to-r from-bg-card/60 to-bg-elevated/40 px-6 py-4 transition-all duration-300 tilt-3d-soft"
-          style={{
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            boxShadow: "0 1px 0 rgba(0,212,255,0.1)",
-          }}
-        >
-          {/* Header glow */}
-          <div className="absolute inset-0 opacity-0 transition-opacity duration-300"
-            style={{
-              background: "linear-gradient(90deg, transparent, rgba(0,212,255,0.05), transparent)",
-            }}
-          />
-
-          <div className="relative flex items-center justify-between">
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {/* Header (hidden on the immersive Rempart dashboard, which has its own top bar) */}
+        {currentPage !== "soc" && (
+        <header className="border-b border-border-default bg-bg-card px-6 py-3">
+          <div className="flex items-center justify-between">
             {/* Title */}
             <div>
-              <h1 className="text-2xl font-bold text-text-primary">{pageTitle}</h1>
-              <p className="mt-1 text-xs font-medium text-text-tertiary tracking-wide">Advanced Network Operations Center</p>
+              <h1 className="text-xl font-semibold text-text-primary">{pageTitle}</h1>
+              <p className="mt-0.5 text-xs font-medium text-text-tertiary">Network Operations Center</p>
             </div>
 
             {/* Right side controls */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
               {/* Theme switch */}
               <button
                 type="button"
                 onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-                className="flex items-center gap-2 rounded-lg border border-border-default/40 bg-white/[0.04] px-4 py-2.5 text-sm font-semibold text-text-secondary transition-all duration-300 hover:bg-white/[0.06] hover:text-text-primary"
+                className="flex items-center gap-2 rounded-md border border-border-default bg-bg-elevated px-3 py-1.5 text-sm font-medium text-text-secondary transition-colors duration-150 hover:bg-bg-card-hover hover:text-text-primary"
                 aria-label="Toggle light and dark mode"
                 title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               >
@@ -475,23 +416,15 @@ export default function App() {
               </button>
 
               {/* Connection status */}
-              <div className="flex items-center gap-3 rounded-lg border border-border-default/40 bg-white/[0.04] px-4 py-2.5 transition-all duration-300 hover:bg-white/[0.06]">
-                <div className="flex items-center gap-2">
-                  <span className={`h-2.5 w-2.5 rounded-full transition-all duration-200 ${
-                    wsConnected
-                      ? "bg-status-online shadow-lg shadow-status-online/50 animate-pulse"
-                      : "bg-status-offline/60"
-                  }`} />
-                  <span className={`text-sm font-semibold transition-colors duration-200 ${
-                    wsConnected ? "text-status-online" : "text-status-offline/80"
-                  }`}>
-                    {wsConnected ? "LIVE" : "OFFLINE"}
-                  </span>
-                </div>
+              <div className="flex items-center gap-2 rounded-md border border-border-default bg-bg-elevated px-3 py-1.5">
+                <span className={`h-2 w-2 rounded-full ${wsConnected ? "bg-status-online" : "bg-status-offline"}`} />
+                <span className={`text-sm font-semibold ${wsConnected ? "text-status-online" : "text-text-tertiary"}`}>
+                  {wsConnected ? "LIVE" : "OFFLINE"}
+                </span>
               </div>
 
               {/* Clock */}
-              <div className="flex items-center gap-2 rounded-lg border border-border-default/40 bg-white/[0.04] px-4 py-2.5 font-mono text-sm font-medium text-text-secondary transition-all duration-300 hover:bg-white/[0.06]">
+              <div className="flex items-center gap-2 rounded-md border border-border-default bg-bg-elevated px-3 py-1.5 font-mono text-sm text-text-secondary">
                 <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="10" />
                   <polyline points="12 6 12 12 16 14" />
@@ -501,10 +434,11 @@ export default function App() {
             </div>
           </div>
         </header>
+        )}
 
         {/* Page content */}
         <main className="relative flex-1 overflow-y-auto">
-          <div className="p-6 lg:p-8">
+          <div className="p-6">
             {renderPage()}
           </div>
         </main>

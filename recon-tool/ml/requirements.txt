@@ -1,0 +1,8 @@
+# ML training / scoring dependencies (classic ML only — no deep learning).
+# Install only where you train or run scoring:  pip install -r ml/requirements.txt
+scikit-learn==1.5.2
+pandas==2.2.3
+numpy==2.1.3
+joblib==1.4.2
+# Optional: enable the xgboost model in train.py (--model xgb)
+# xgboost==2.1.1

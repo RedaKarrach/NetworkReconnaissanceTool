@@ -14,6 +14,7 @@ from .views import (
     MitreMappingView,
     HostRiskScoreView,
     AuditLogView,
+    MitigationsView,
 )
 
 try:
@@ -51,6 +52,9 @@ urlpatterns = [
 
     # MITRE mapping
     path("mitre-mapping/",         MitreMappingView.as_view()),
+
+    # IPS / mitigation actions
+    path("mitigations/",           MitigationsView.as_view()),
 
     # Results & reports
     path("results/<str:session_id>/",    SessionResultsView.as_view()),

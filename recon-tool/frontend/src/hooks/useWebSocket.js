@@ -8,7 +8,7 @@
  * what they need (packets, alerts, host discoveries, port results, etc.)
  */
 import { useState, useEffect, useRef, useCallback } from "react";
-import { API_BASE, WS_BASE } from "../lib/runtimeConfig";
+import { API_BASE, WS_BASE, API_TOKEN } from "../lib/runtimeConfig";
 
 const MAX_PACKET_BUFFER = 500;
 const MAX_ALERT_BUFFER = 300;
@@ -95,9 +95,13 @@ function hasSynFlag(event) {
   return flags.includes("SYN") || flags.includes("S") || flags.includes("SYN-FLOOD");
 }
 
+const MAX_EVENT_BUFFER = 300;
+
 export function useWebSocket(sessionId) {
   const [packets, setPackets]         = useState([]);
   const [alerts, setAlerts]           = useState([]);
+  const [events, setEvents]           = useState([]);   // lifecycle/activity feed
+  const [mitigations, setMitigations] = useState([]);   // IPS/response actions
   const [hosts, setHosts]             = useState([]);
   const [portResults, setPortResults] = useState([]);
   const [osResults, setOsResults]     = useState([]);
@@ -115,6 +119,7 @@ export function useWebSocket(sessionId) {
   const retryTimerRef = useRef(null);
   const retryAttemptRef = useRef(0);
   const closingRef = useRef(false);
+  const heartbeatTimerRef = useRef(null);
 
   // Calculate packets-per-second every second
   useEffect(() => {
@@ -133,6 +138,8 @@ export function useWebSocket(sessionId) {
     setStatus("connecting");
     setPackets([]);
     setAlerts([]);
+    setEvents([]);
+    setMitigations([]);
     setHosts([]);
     setPortResults([]);
     setOsResults([]);
@@ -142,7 +149,7 @@ export function useWebSocket(sessionId) {
     pktCountRef.current = 0;
     synCountRef.current = 0;
     alertSeenRef.current = new Set();
-    const url = `${WS_BASE}/ws/scan/${sessionId}/`;
+    const url = `${WS_BASE}/ws/scan/${sessionId}/${API_TOKEN ? `?token=${encodeURIComponent(API_TOKEN)}` : ""}`;
     const ws  = new WebSocket(url);
     wsRef.current = ws;
     closingRef.current = false;
@@ -150,6 +157,14 @@ export function useWebSocket(sessionId) {
     ws.onopen = () => {
       retryAttemptRef.current = 0;
       setStatus("connected");
+      // Client heartbeat: keeps the socket alive through proxies and lets a
+      // dead connection surface quickly. The server also pings independently.
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* noop */ }
+        }
+      }, 25000);
     };
 
     ws.onmessage = (e) => {
@@ -183,6 +198,23 @@ export function useWebSocket(sessionId) {
 
           setAlerts((prev) => [data, ...prev].slice(0, MAX_ALERT_BUFFER));
           break;
+        case "ml_alert": {
+          // ML detections render in the Alerts feed with an "AI" badge.
+          const tagged = { ...data, source: "ml" };
+          const key = alertKey(tagged);
+          if (alertSeenRef.current.has(key)) break;
+          alertSeenRef.current.add(key);
+          setAlerts((prev) => [tagged, ...prev].slice(0, MAX_ALERT_BUFFER));
+          break;
+        }
+        case "event":
+          // Lifecycle/activity: scan started/complete, attack launched, agents.
+          setEvents((prev) => [data, ...prev].slice(0, MAX_EVENT_BUFFER));
+          break;
+        case "mitigation":
+          // IPS/response actions (recommended or enforced).
+          setMitigations((prev) => [data, ...prev].slice(0, MAX_EVENT_BUFFER));
+          break;
         case "host_found":
           setHosts((prev) => upsertHostByIp(prev, data));
           break;
@@ -215,6 +247,10 @@ export function useWebSocket(sessionId) {
 
     ws.onclose  = () => {
       setStatus("disconnected");
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
       scheduleReconnect();
     };
     ws.onerror  = () => {
@@ -227,6 +263,10 @@ export function useWebSocket(sessionId) {
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
+      }
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();
@@ -274,7 +314,7 @@ export function useWebSocket(sessionId) {
   }, []);
 
   return {
-    packets, alerts, hosts, portResults, osResults,
+    packets, alerts, events, mitigations, hosts, portResults, osResults,
     status, sessionStatus, pps, synPps, send,
     // Convenience: combined raw event stream
     allEvents: packets,

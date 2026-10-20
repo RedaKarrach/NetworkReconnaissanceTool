@@ -16,3 +16,8 @@ function browserWsBase() {
 export const API_BASE = trimTrailingSlash(process.env.REACT_APP_API_URL) || browserApiBase();
 export const WS_BASE = trimTrailingSlash(process.env.REACT_APP_WS_URL) || browserWsBase();
 export const ADMIN_TOKEN = String(process.env.REACT_APP_ADMIN_PASSWORD || "").trim();
+
+// Operator token sent to the backend when API_AUTH_TOKEN is enforced.
+// Empty by default (dev bypass). Used as an ?token= query param on the WS and
+// an X-API-TOKEN header on REST calls.
+export const API_TOKEN = String(process.env.REACT_APP_API_TOKEN || "").trim();

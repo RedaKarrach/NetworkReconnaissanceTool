@@ -26,6 +26,16 @@ Thumbs.db
 
 # Ignore embedded repo if present
 NetworkReconnaissanceTool/
-*.sqlite3
 .vscode/
 **/__pycache__/
+
+# ML datasets and trained model binaries (large; not committed)
+recon-tool/ml/datasets/*.csv
+recon-tool/ml/artifacts/*.joblib
+recon-tool/ml/artifacts/*.pkl
+recon-tool/ml/artifacts/*.onnx
+recon-tool/ml/artifacts/metrics.json
+
+# Dev SQLite (Django auth only; not committed)
+db.sqlite3
+*.sqlite3

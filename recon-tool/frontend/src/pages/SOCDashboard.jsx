@@ -118,6 +118,8 @@ function normalizeSeverity(value) {
 }
 
 function normalizeAlert(input) {
+  const isMl = input?.source === "ml" || input?.event_type === "ml_alert" ||
+    String(input?.type || "").toLowerCase().startsWith("ml_");
   return {
     event_type: input?.event_type || "alert",
     type: input?.type || "unknown_rule",
@@ -130,6 +132,11 @@ function normalizeAlert(input) {
     mitre_tactic_id: input?.mitre_tactic_id || "",
     mitre_technique: input?.mitre_technique || "",
     mitre_technique_id: input?.mitre_technique_id || "",
+    // ML triage fields (present only for ml_alert events).
+    is_ml: isMl,
+    confidence: typeof input?.confidence === "number" ? input.confidence : null,
+    priority: typeof input?.priority === "number" ? input.priority : null,
+    model_version: input?.model_version || "",
   };
 }
 
@@ -224,20 +231,23 @@ function resolveMitreForAlert(alert, mappings) {
   return alert;
 }
 
-function KpiCard({ title, value, subLabel, valueClass, subLabelClass, flash }) {
+function KpiCard({ title, value, subLabel, valueClass, subLabelClass, flash, accent }) {
   return (
-    <div className="card-premium relative overflow-hidden p-4">
-      {flash && (
-        <div
-          className="absolute inset-0 bg-accent-muted"
-          style={{ animation: "fade-in 220ms ease-out reverse" }}
-        />
-      )}
-      <p className="relative z-10 text-xs font-semibold tracking-wider text-text-tertiary uppercase">{title}</p>
-      <p className={`relative z-10 mt-2 font-mono font-semibold leading-none ${valueClass}`} style={{ fontSize: "22px" }}>
-        {value}
-      </p>
-      <p className={`relative z-10 mt-1 text-[11px] ${subLabelClass}`}>{subLabel}</p>
+    <div className="relative flex items-stretch overflow-hidden rounded-lg border border-border-default bg-bg-card">
+      {/* Left accent rail (severity/status color) */}
+      <span className={`w-1 flex-shrink-0 ${accent || "bg-border-elevated"}`} />
+      <div className="relative flex-1 px-4 py-3">
+        {flash && (
+          <div className="absolute inset-0 bg-accent-muted" style={{ animation: "alert-flash 600ms ease-out 1" }} />
+        )}
+        <div className="relative flex items-baseline justify-between gap-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-text-tertiary">{title}</span>
+        </div>
+        <div className={`relative mt-1.5 font-mono text-3xl font-semibold leading-none tabular-nums ${valueClass}`}>
+          {value}
+        </div>
+        <div className={`relative mt-1.5 text-xs ${subLabelClass}`}>{subLabel}</div>
+      </div>
     </div>
   );
 }
@@ -255,14 +265,31 @@ function AlertRow({ alert, isNewest }) {
       <div className={`${style.bar} rounded-full`} style={{ width: "3px" }} />
       <div className={`mt-1 h-2 w-2 rounded-full ${style.dot}`} />
       <div className="flex-1 overflow-hidden">
-        <p className="font-semibold text-text-primary" style={{ fontSize: "12px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-          {alert.message}
-        </p>
-        <p className="mt-1 text-sm text-text-tertiary">src: {alert.src_ip}</p>
+        <div className="flex items-center gap-2">
+          {alert.is_ml && (
+            <span
+              className="inline-flex items-center rounded border border-accent-border bg-accent-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-primary"
+              title={alert.model_version ? `model ${alert.model_version}` : "machine-learning detection"}
+            >
+              AI
+            </span>
+          )}
+          <p className="font-semibold text-text-primary" style={{ fontSize: "12px", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            {alert.message}
+          </p>
+        </div>
+        <p className="mt-1 text-sm text-text-tertiary">src: <span className="font-mono">{alert.src_ip}</span></p>
         <p className="text-sm text-text-tertiary">rule: {alert.type}</p>
+        {alert.is_ml && (alert.confidence !== null || alert.priority !== null) && (
+          <p className="mt-0.5 font-mono text-xs text-text-tertiary">
+            {alert.confidence !== null ? `confidence ${Math.round(alert.confidence * 100)}%` : ""}
+            {alert.confidence !== null && alert.priority !== null ? " · " : ""}
+            {alert.priority !== null ? `priority ${alert.priority}` : ""}
+          </p>
+        )}
       </div>
       <div className="ml-2 flex flex-col items-end gap-1">
-        <span className={`alert-badge-3d rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText} ${style.pulse ? "animate-pulse-critical" : ""}`}>
+        <span className={`alert-badge-3d rounded-full border px-2 py-0.5 font-mono text-xs ${style.badgeBg} ${style.badgeBorder} ${style.badgeText}`}>
           {alert.severity.toUpperCase()}
         </span>
         <span className="font-mono text-xs text-text-tertiary">{formatTime(alert.timestamp)}</span>
@@ -527,23 +554,21 @@ export default function SOCDashboard() {
 
   return (
     <div className="scene-3d flex h-full min-h-0 flex-col gap-4 overflow-hidden text-text-primary">
-      <div className="flex gap-2 border-b border-border-premium/40 overflow-x-auto">
-        {SOC_TABS.map((tab, idx) => {
+      <div className="flex gap-1 border-b border-border-default overflow-x-auto">
+        {SOC_TABS.map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className="relative px-5 py-3.5 text-sm font-semibold transition-all duration-300 whitespace-nowrap stagger-item"
-              style={{ animationDelay: `${idx * 30}ms` }}
+              className={`relative -mb-px border-b-2 px-4 py-2.5 text-sm transition-colors duration-150 whitespace-nowrap ${
+                isActive
+                  ? "border-accent-primary font-semibold text-text-primary"
+                  : "border-transparent font-medium text-text-tertiary hover:text-text-secondary"
+              }`}
             >
-              {isActive && (
-                <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-accent-primary to-accent-hover rounded-full" />
-              )}
-              <span className={isActive ? "text-accent-primary" : "text-text-tertiary hover:text-text-secondary"}>
-                {tab.label}
-              </span>
+              {tab.label}
             </button>
           );
         })}
@@ -562,32 +587,36 @@ export default function SOCDashboard() {
               title="SYN packets / sec"
               value={synPps}
               subLabel={synAlertsLast60 > 0 ? `${synAlertsLast60} SYN alerts in last 60s` : "No SYN flood detected"}
-              valueClass="text-threat-critical"
-              subLabelClass={synAlertsLast60 > 0 ? "text-threat-critical-text" : "text-text-tertiary"}
+              valueClass="text-text-primary"
+              subLabelClass={synAlertsLast60 > 0 ? "text-threat-critical" : "text-text-tertiary"}
+              accent="bg-threat-critical"
               flash={flash.syn}
             />
             <KpiCard
               title="ARP anomalies"
               value={arpAnomalies}
               subLabel={`MAC changed × ${arpAnomalies}`}
-              valueClass="text-threat-high"
-              subLabelClass="text-threat-high-text"
+              valueClass="text-text-primary"
+              subLabelClass="text-text-tertiary"
+              accent="bg-threat-high"
               flash={flash.arp}
             />
             <KpiCard
               title="Alerts fired"
               value={alertsFiredLast60}
               subLabel="Last 60 seconds"
-              valueClass="text-threat-critical"
+              valueClass="text-text-primary"
               subLabelClass="text-text-tertiary"
+              accent="bg-accent-primary"
               flash={flash.alerts}
             />
             <KpiCard
               title="Agents online"
               value={onlineAgentCount}
               subLabel={onlineAgentLabel}
-              valueClass="text-status-success"
+              valueClass="text-text-primary"
               subLabelClass="text-text-tertiary"
+              accent="bg-status-success"
               flash={flash.agents}
             />
           </section>
@@ -595,11 +624,11 @@ export default function SOCDashboard() {
           <section className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,1fr)]">
             <div className="flex min-h-0 flex-1 flex-col gap-3 min-w-0">
               <div className="panel-premium alert-panel-shell flex min-h-0 flex-1 flex-col tilt-3d-soft">
-                <div className="flex items-center border-b border-border-default/60 px-4 py-3">
-                  <p className="text-sm font-medium tracking-widest text-text-tertiary">ALERT FEED</p>
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-status-danger animate-pulse-critical" />
-                    <span className="font-mono text-sm text-status-danger">live</span>
+                <div className="flex items-center border-b border-border-default px-4 py-2.5">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Alert feed</p>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-status-danger" />
+                    <span className="text-xs font-medium text-status-danger">LIVE</span>
                   </div>
                 </div>
 
@@ -626,7 +655,7 @@ export default function SOCDashboard() {
 
             <div className="flex min-h-0 flex-1 flex-col gap-3 min-w-0">
               <div className="card-premium p-4 tilt-3d-soft">
-                <p className="text-sm font-medium tracking-widest text-text-tertiary">LIVE ENDPOINT STATUS</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">LIVE ENDPOINT STATUS</p>
                 {healthError && (
                   <div className="mt-2 rounded-md border border-border-default bg-bg-elevated/70 px-3 py-2 text-xs text-text-tertiary">
                     Health feed unavailable: {healthError}
@@ -661,7 +690,7 @@ export default function SOCDashboard() {
               </div>
 
               <div className="card-premium p-4 tilt-3d-soft">
-                <p className="text-sm font-medium tracking-widest text-text-tertiary">HOT TARGETS</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">HOT TARGETS</p>
                 <div className="mt-3 space-y-2">
                   {hotTargets.length === 0 ? (
                     <div className="rounded-md bg-bg-elevated px-3 py-2 text-sm text-text-tertiary">No alert targets yet.</div>
@@ -684,7 +713,7 @@ export default function SOCDashboard() {
               </div>
 
               <div className="card-premium p-4 tilt-3d-soft">
-                <p className="text-sm font-medium tracking-widest text-text-tertiary">SYN RATE (60S)</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">SYN RATE (60S)</p>
                 <div className="mt-3 flex h-24 items-end gap-px">
                   {synHistory.map((value, index) => {
                     const isAttack = value >= 700;
@@ -709,7 +738,7 @@ export default function SOCDashboard() {
               </div>
 
               <div className="card-premium p-4 tilt-3d-soft">
-                <p className="text-sm font-medium tracking-widest text-text-tertiary">DETECTION RULES FIRED</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">DETECTION RULES FIRED</p>
                 <div className="mt-3 space-y-3">
                   {detectionRows.map((row) => (
                     <div key={row.id} className="agent-chip flex items-center gap-2">
@@ -731,12 +760,12 @@ export default function SOCDashboard() {
               </div>
 
               <div className="card-premium p-4 tilt-3d-soft">
-                <p className="text-sm font-medium tracking-widest text-text-tertiary">RULES REFERENCE</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">RULES REFERENCE</p>
                 <div className="mt-3 space-y-3">
                   {RULE_REFERENCE.map((group) => (
                     <div key={group.title} className="rounded-lg border border-border-default/60 bg-bg-elevated/60 p-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold uppercase tracking-widest text-text-tertiary">{group.title}</span>
+                        <span className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{group.title}</span>
                         <span className="orbital-tag">{group.items.length} rules</span>
                       </div>
                       <div className="mt-2 space-y-2">

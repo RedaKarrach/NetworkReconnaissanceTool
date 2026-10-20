@@ -11,6 +11,19 @@ DEBUG      = os.environ.get("DEBUG", "True") == "True"
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 SCAN_ALLOWED_SUBNET = os.environ.get("SCAN_ALLOWED_SUBNET", "192.168.56.0/24")
 
+# Operator token for scan/attack endpoints and the WebSocket.
+# Leave empty to disable auth (documented dev bypass for the local lab).
+API_AUTH_TOKEN = os.environ.get("API_AUTH_TOKEN", "")
+
+# IPS response layer. Off by default: confirmed detections are recorded as
+# "would_block" recommendations only; nothing on the network is touched.
+# Real enforcement is lab-only — see docs/ARCHITECTURE.md.
+IPS_ENFORCE = os.environ.get("IPS_ENFORCE", "false").strip().lower() in {"1", "true", "yes"}
+
+# Classic-ML scoring + triage. Off by default; degrades gracefully if the ml
+# package, sklearn, or trained artifacts are missing. See recon-tool/ml/.
+ML_ENABLED = os.environ.get("ML_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
@@ -70,12 +83,33 @@ MONGO_URI = os.environ.get("MONGO_URI", "mongodb://mongo:27017/recon_db")
 import mongoengine
 mongoengine.connect(host=MONGO_URI)
 
-# Django Channels — InMemoryChannelLayer (no Redis required)
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
+# Django Channels — Redis channel layer.
+#
+# InMemoryChannelLayer queues are bound to Daphne's event loop, so a
+# group_send issued with async_to_sync from a background worker thread is
+# silently dropped. The whole app broadcasts alerts/packets from threads, so a
+# cross-process broker (Redis) is required for live streaming to work.
+#
+# Set CHANNEL_LAYER_BACKEND=memory to force the in-memory layer (tests only;
+# live streaming from worker threads will not work with it).
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+CHANNEL_LAYER_BACKEND = os.environ.get("CHANNEL_LAYER_BACKEND", "redis").strip().lower()
+
+if CHANNEL_LAYER_BACKEND == "memory" or not REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
     }
-}
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [REDIS_URL],
+                "capacity": 2000,          # max messages queued per channel
+                "expiry": 30,              # seconds before an undelivered message expires
+            },
+        }
+    }
 
 STATIC_URL = "/static/"
 
