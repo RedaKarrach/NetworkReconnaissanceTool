@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Dashboard from "./pages/Dashboard";
-import SOCDashboard from "./pages/SOCDashboard";
+import RempartDashboard from "./pages/RempartDashboard";
 import Endpoints from "./pages/Endpoints";
 import Inventory from "./pages/Inventory";
 import AttackConsole from "./components/AttackConsole";
@@ -251,7 +251,7 @@ export default function App() {
 
   function renderPage() {
     if (currentPage === "soc") {
-      return <SOCDashboard />;
+      return <RempartDashboard />;
     }
     if (currentPage === "dashboard") {
       return <Dashboard onSessionStart={setActiveSession} />;
@@ -268,7 +268,7 @@ export default function App() {
     if (currentPage === "inventory") {
       return <Inventory />;
     }
-    return <SOCDashboard />;
+    return <RempartDashboard />;
   }
 
   if (!isAuthenticated) {
@@ -289,8 +289,8 @@ export default function App() {
             </div>
             {!isSidebarCollapsed && (
               <div className="min-w-0">
-                <p className="truncate text-md font-semibold text-text-primary">ReconTool</p>
-                <p className="truncate text-xs font-medium text-text-tertiary">Security Ops</p>
+                <p className="truncate text-md font-semibold text-text-primary">Rempart <span style={{ color: "#2dd4bf" }}>SIEM</span></p>
+                <p className="truncate text-xs font-medium text-text-tertiary">Network SOC</p>
               </div>
             )}
           </div>
@@ -382,7 +382,8 @@ export default function App() {
 
       {/* Main content */}
       <div className="relative flex min-w-0 flex-1 flex-col">
-        {/* Header */}
+        {/* Header (hidden on the immersive Rempart dashboard, which has its own top bar) */}
+        {currentPage !== "soc" && (
         <header className="border-b border-border-default bg-bg-card px-6 py-3">
           <div className="flex items-center justify-between">
             {/* Title */}
@@ -433,6 +434,7 @@ export default function App() {
             </div>
           </div>
         </header>
+        )}
 
         {/* Page content */}
         <main className="relative flex-1 overflow-y-auto">
