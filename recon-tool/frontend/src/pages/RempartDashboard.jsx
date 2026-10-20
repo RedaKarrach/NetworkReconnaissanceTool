@@ -88,7 +88,7 @@ function Chip({ children, color }) {
 // ── Semicircle gauge (security health) ───────────────────────────────────────
 function Gauge({ value = 0, label }) {
   const v = Math.max(0, Math.min(100, value));
-  const R = 80, CX = 100, CY = 100, W = 14;
+  const R = 82, CX = 100, CY = 100, W = 15;
   const a0 = Math.PI, a1 = 0; // 180° -> 0°
   const ang = a0 + (a1 - a0) * (v / 100);
   const pt = (a, r) => [CX + r * Math.cos(a), CY - r * Math.sin(a)];
@@ -99,43 +99,77 @@ function Gauge({ value = 0, label }) {
     const sweep = to < from ? 1 : 0;
     return `M ${x0} ${y0} A ${r} ${r} 0 ${large} ${sweep} ${x1} ${y1}`;
   };
-  const color = v >= 80 ? C.ok : v >= 55 ? C.high : C.crit;
   const grade = v >= 85 ? "Excellent" : v >= 70 ? "Healthy" : v >= 50 ? "At risk" : "Critical";
+  const gcol = v >= 85 ? C.ok : v >= 70 ? C.accent : v >= 50 ? C.high : C.crit;
+  const [tx, ty] = pt(ang, R); // marker at value
   return (
-    <svg viewBox="0 0 200 118" className="w-full" style={{ maxHeight: 150 }}>
-      <path d={arc(a0, a1, R)} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={W} strokeLinecap="round" />
-      <path d={arc(a0, ang, R)} fill="none" stroke={color} strokeWidth={W} strokeLinecap="round" />
-      <text x={CX} y={CY - 18} textAnchor="middle" style={{ fill: C.text, fontSize: 30, fontWeight: 700 }} className="font-mono">
+    <svg viewBox="0 0 200 116" className="w-full" style={{ maxHeight: 158 }}>
+      <defs>
+        <linearGradient id="gaugegrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor={C.crit} />
+          <stop offset="35%" stopColor={C.med} />
+          <stop offset="60%" stopColor={C.high} />
+          <stop offset="100%" stopColor={C.accent} />
+        </linearGradient>
+      </defs>
+      {/* grey remainder track */}
+      <path d={arc(a0, a1, R)} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={W} strokeLinecap="round" />
+      {/* filled value arc with multi-stop gradient */}
+      <path d={arc(a0, ang, R)} fill="none" stroke="url(#gaugegrad)" strokeWidth={W} strokeLinecap="round" />
+      {/* value marker */}
+      <circle cx={tx} cy={ty} r="5" fill="#0b1f24" stroke={gcol} strokeWidth="3" />
+      <text x={CX} y={CY - 16} textAnchor="middle" style={{ fill: C.text, fontSize: 34, fontWeight: 700 }} className="font-mono">
         {Math.round(v)}
       </text>
-      <text x={CX + 24} y={CY - 20} textAnchor="start" style={{ fill: C.faint, fontSize: 11 }}>/100</text>
-      <text x={CX} y={CY + 2} textAnchor="middle" style={{ fill: color, fontSize: 12, fontWeight: 600 }}>{label || grade}</text>
+      <text x={CX + 30} y={CY - 18} textAnchor="start" style={{ fill: C.faint, fontSize: 12 }}>/100</text>
+      <text x={CX} y={CY + 4} textAnchor="middle" style={{ fill: gcol, fontSize: 13, fontWeight: 600 }}>{label || grade}</text>
     </svg>
   );
 }
 
 // ── Trend area chart (alerts per bucket) ─────────────────────────────────────
 function TrendArea({ series, color = C.accent }) {
-  const W = 320, H = 110, P = 6;
-  const max = Math.max(1, ...series);
+  const W = 330, H = 140, PL = 22, PR = 8, PT = 10, PB = 20;
+  const yMax = Math.max(80, Math.ceil(Math.max(1, ...series) / 20) * 20);
   const n = series.length;
-  const x = (i) => P + (i * (W - 2 * P)) / Math.max(1, n - 1);
-  const y = (val) => H - P - (val / max) * (H - 2 * P - 10);
+  const x = (i) => PL + (i * (W - PL - PR)) / Math.max(1, n - 1);
+  const y = (val) => H - PB - (val / yMax) * (H - PT - PB);
   const line = series.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
-  const area = `${line} L ${x(n - 1).toFixed(1)} ${H - P} L ${x(0).toFixed(1)} ${H - P} Z`;
+  const area = `${line} L ${x(n - 1).toFixed(1)} ${H - PB} L ${x(0).toFixed(1)} ${H - PB} Z`;
+  const peakIdx = series.indexOf(Math.max(...series));
+  const peak = series[peakIdx] || 0;
+  const ticks = [0, yMax / 2, yMax];
+  const xlabels = ["-12m", "-9m", "-6m", "-3m", "now"];
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 130 }}>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 150 }}>
       <defs>
         <linearGradient id="trendfill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+          <stop offset="0%" stopColor={color} stopOpacity="0.30" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
+        <pattern id="hatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+          <line x1="0" y1="0" x2="0" y2="6" stroke={color} strokeWidth="1" strokeOpacity="0.12" />
+        </pattern>
       </defs>
-      {[0.25, 0.5, 0.75].map((g) => (
-        <line key={g} x1={P} x2={W - P} y1={H - P - g * (H - 2 * P - 10)} y2={H - P - g * (H - 2 * P - 10)} stroke="rgba(255,255,255,0.05)" />
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={PL} x2={W - PR} y1={y(t)} y2={y(t)} stroke="rgba(255,255,255,0.06)" />
+          <text x={PL - 6} y={y(t) + 3} textAnchor="end" style={{ fill: C.faint, fontSize: 9 }} className="font-mono">{t}</text>
+        </g>
       ))}
+      <path d={area} fill="url(#hatch)" />
       <path d={area} fill="url(#trendfill)" />
       <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" />
+      {peak > 0 && (
+        <g>
+          <circle cx={x(peakIdx)} cy={y(peak)} r="4" fill={color} stroke="#0b1f24" strokeWidth="2" />
+          <rect x={x(peakIdx) - 20} y={y(peak) - 22} width="40" height="16" rx="8" fill={color} />
+          <text x={x(peakIdx)} y={y(peak) - 11} textAnchor="middle" style={{ fill: "#042f2a", fontSize: 9, fontWeight: 700 }}>{peak}</text>
+        </g>
+      )}
+      {xlabels.map((l, i) => (
+        <text key={l} x={PL + (i * (W - PL - PR)) / (xlabels.length - 1)} y={H - 6} textAnchor="middle" style={{ fill: C.faint, fontSize: 9 }} className="font-mono">{l}</text>
+      ))}
     </svg>
   );
 }
@@ -175,6 +209,17 @@ function Topology({ attackerIps }) {
   };
   return (
     <svg viewBox="0 0 580 290" className="w-full" style={{ maxHeight: 290 }}>
+      <defs>
+        <pattern id="dots" width="16" height="16" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="1" fill={C.accent} fillOpacity="0.08" />
+        </pattern>
+        <radialGradient id="topoglow" cx="50%" cy="40%" r="70%">
+          <stop offset="0%" stopColor={C.accent} stopOpacity="0.06" />
+          <stop offset="100%" stopColor={C.accent} stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <rect x="0" y="0" width="580" height="290" fill="url(#dots)" />
+      <rect x="0" y="0" width="580" height="290" fill="url(#topoglow)" />
       {edges.map(([a, b, d]) => edge(a, b, d))}
       {nodes.map((n) => {
         const col = n.danger && hasAttack ? C.crit : C.accent;
@@ -305,10 +350,15 @@ export default function RempartDashboard() {
             <div key={f} className="rounded-lg px-3 py-1.5 text-xs" style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.muted }}>{f} <span style={{ color: C.faint }}>▾</span></div>
           ))}
           <div className="ml-auto flex items-center gap-2">
-            <div className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs" style={{ background: C.panel, border: `1px solid ${C.borderSoft}` }}>
+            <div className="hidden items-center gap-2 rounded-lg px-3 py-1.5 text-xs md:flex" style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.faint, minWidth: 180 }}>
+              <span>⌕</span><span>Search…</span>
+            </div>
+            <div className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs" style={{ background: C.panel, border: `1px solid ${C.borderSoft}` }}>
               <span className="h-1.5 w-1.5 rounded-full" style={{ background: connected ? C.ok : C.faint }} />
               <span style={{ color: connected ? C.ok : C.faint }}>{connected ? "LIVE" : "OFFLINE"}</span>
             </div>
+            <button className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.muted }} title="Notifications">🔔</button>
+            <div className="flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold" style={{ background: C.accent, color: "#042f2a" }}>SOC</div>
           </div>
         </div>
 
@@ -318,7 +368,11 @@ export default function RempartDashboard() {
             <h1 className="text-2xl font-bold" style={{ color: C.text }}>Incident Management</h1>
             <p className="mt-0.5 text-sm" style={{ color: C.muted }}>Monitor, investigate, prioritize and respond across the lab network.</p>
           </div>
-          <div className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: C.accent, color: "#042f2a" }}>↻ Refresh</div>
+          <div className="flex items-center gap-2">
+            <button className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: C.panel, border: `1px solid ${C.border}`, color: C.accentSoft }}>↻ Refresh Data</button>
+            <button className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.muted }} title="Export">⭳</button>
+            <button className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.muted }} title="Share">↗</button>
+          </div>
         </div>
 
         {/* Grid */}
@@ -391,7 +445,15 @@ export default function RempartDashboard() {
                     <tr><td colSpan={4} className="py-4 text-center" style={{ color: C.faint }}>No alerts yet — trigger a scan or attack on the lab.</td></tr>
                   ) : radar.map((a, i) => (
                     <tr key={i} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
-                      <td className="py-2 pr-2" style={{ color: C.text }}>{a.type}</td>
+                      <td className="py-2 pr-2" style={{ color: C.text }}>
+                        <span className="flex items-center gap-2">
+                          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-semibold"
+                            style={{ background: `${sevColor(a.severity)}22`, color: sevColor(a.severity), border: `1px solid ${sevColor(a.severity)}55` }}>
+                            {String(a.type || "?").slice(0, 2).toUpperCase()}
+                          </span>
+                          <span className="truncate">{a.type}</span>
+                        </span>
+                      </td>
                       <td className="py-2 pr-2 font-mono text-xs">{a.src_ip || "—"}</td>
                       <td className="py-2 pr-2"><Chip color={sevColor(a.severity)}>{normSev(a.severity)}</Chip></td>
                       <td className="py-2 text-right font-mono text-xs">{timeShort(a)}</td>
@@ -405,20 +467,28 @@ export default function RempartDashboard() {
           {/* RIGHT */}
           <div className="flex flex-col gap-3">
             <Panel title="Response Timeline" subtitle="Latest events & mitigations">
-              <div className="flex flex-col">
-                {timeline.length === 0 ? (
-                  <div className="py-4 text-sm" style={{ color: C.faint }}>Waiting for activity…</div>
-                ) : timeline.map((it, i) => (
-                  <div key={i} className="flex items-start gap-3 py-2" style={{ borderBottom: i < timeline.length - 1 ? `1px solid ${C.borderSoft}` : "none" }}>
-                    <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full" style={{ background: it.kind === "mitigation" ? C.high : C.accent }} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm" style={{ color: C.text }}>{it.type || it.action || "event"}</div>
-                      <div className="font-mono text-[11px]" style={{ color: C.faint }}>{timeShort(it)}</div>
-                    </div>
-                    {chipFor(it)}
-                  </div>
-                ))}
-              </div>
+              {timeline.length === 0 ? (
+                <div className="py-4 text-sm" style={{ color: C.faint }}>Waiting for activity…</div>
+              ) : (
+                <div className="relative flex flex-col">
+                  {/* vertical connector */}
+                  <div className="absolute top-2 bottom-2 w-px" style={{ left: 7, background: C.borderSoft }} />
+                  {timeline.map((it, i) => {
+                    const dot = it.kind === "mitigation" ? C.high : C.accent;
+                    return (
+                      <div key={i} className="relative flex items-start gap-3 py-2.5">
+                        <span className="relative z-10 mt-0.5 flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-full"
+                          style={{ background: C.panel, border: `2px solid ${dot}` }} />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium" style={{ color: C.text }}>{it.type || it.action || "event"}</div>
+                          <div className="font-mono text-[11px]" style={{ color: C.faint }}>{timeShort(it)}</div>
+                        </div>
+                        {chipFor(it)}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </Panel>
 
             <Panel title="Alert Volume Trend" subtitle="Alerts per minute · last 12 min"
