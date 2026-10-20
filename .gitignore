@@ -39,3 +39,6 @@ recon-tool/ml/artifacts/metrics.json
 # Dev SQLite (Django auth only; not committed)
 db.sqlite3
 *.sqlite3
+
+# Local thesis/report (not part of the app)
+RapportPFA/
